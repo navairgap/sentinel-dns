@@ -26,3 +26,6 @@ Design docs first, then the sniffer. Follows SentinelWiFi's passive-only rules.
 ## License
 
 MIT, see [LICENSE](LICENSE).
+
+---
+maintained · verified 2026-09-30
