@@ -29,3 +29,11 @@ MIT, see [LICENSE](LICENSE).
 
 ---
 maintained · verified 2026-09-30
+
+## How detection works
+
+1. Capture outbound DNS queries passively.
+2. Score entropy, domain age signals, and NXDOMAIN ratio per client.
+3. Alert when a client's score crosses the threshold for N consecutive windows.
+
+Tuning lives in `config.yml` — lower the window for noisier networks.
