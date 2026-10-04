@@ -37,3 +37,7 @@ maintained · verified 2026-09-30
 3. Alert when a client's score crosses the threshold for N consecutive windows.
 
 Tuning lives in `config.yml` — lower the window for noisier networks.
+
+## False positives
+
+CDNs and DoH forwarders score high on entropy by nature. Exclude known resolver IPs in `config.yml` under `trusted_resolvers`, and require the alert threshold to hold for at least 3 consecutive windows before paging anyone.
