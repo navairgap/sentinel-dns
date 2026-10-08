@@ -41,3 +41,8 @@ Tuning lives in `config.yml` — lower the window for noisier networks.
 ## False positives
 
 CDNs and DoH forwarders score high on entropy by nature. Exclude known resolver IPs in `config.yml` under `trusted_resolvers`, and require the alert threshold to hold for at least 3 consecutive windows before paging anyone.
+
+
+## Privacy
+
+DNS metadata stays local — nothing leaves the box except your alerts. The scorer needs no cloud lookups, which also means it works on air-gapped networks.
