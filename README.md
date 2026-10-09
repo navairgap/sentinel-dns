@@ -51,3 +51,8 @@ DNS metadata stays local — nothing leaves the box except your alerts. The scor
 ## Requirements
 
 python 3.9+, root or CAP_NET_RAW for capture, ~30MB ram. a raspberry pi zero runs it fine on a home network.
+
+
+## Testing the install
+
+run `sentinel-dns --selftest`: it resolves ten known-good domains and one deliberately-bad one, and verifies the scorer fires on exactly the bad one. if selftest passes, your install is good.
