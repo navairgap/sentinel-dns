@@ -56,3 +56,7 @@ python 3.9+, root or CAP_NET_RAW for capture, ~30MB ram. a raspberry pi zero run
 ## Testing the install
 
 run `sentinel-dns --selftest`: it resolves ten known-good domains and one deliberately-bad one, and verifies the scorer fires on exactly the bad one. if selftest passes, your install is good.
+
+## Motivation
+
+dns is the one channel almost every host is allowed to use. malware exploits that — long, random, rarely-repeated domains are cheap to generate and hard to miss at the resolver. watching dns catches what firewalls don't.
