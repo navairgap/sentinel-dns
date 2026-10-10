@@ -60,3 +60,7 @@ run `sentinel-dns --selftest`: it resolves ten known-good domains and one delibe
 ## Motivation
 
 dns is the one channel almost every host is allowed to use. malware exploits that — long, random, rarely-repeated domains are cheap to generate and hard to miss at the resolver. watching dns catches what firewalls don't.
+
+## Motivation
+
+dns is the one channel almost every host is allowed to use. malware exploits that — long, random, rarely-repeated domains are cheap to generate and hard to miss at the resolver. watching dns catches what firewalls don't.
