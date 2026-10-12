@@ -64,3 +64,7 @@ dns is the one channel almost every host is allowed to use. malware exploits tha
 ## Motivation
 
 dns is the one channel almost every host is allowed to use. malware exploits that — long, random, rarely-repeated domains are cheap to generate and hard to miss at the resolver. watching dns catches what firewalls don't.
+
+## Alert anatomy
+
+alerts look like `{"client":"10.0.0.42","domain":"x9q2.xyz","score":0.91,"reasons":["high_entropy","dga_shape"]}`. they fire when score holds above threshold for N consecutive windows — tune N, not the score, for quieter networks.
