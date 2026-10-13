@@ -72,3 +72,7 @@ alerts look like `{"client":"10.0.0.42","domain":"x9q2.xyz","score":0.91,"reason
 ## Performance
 
 passive capture costs near zero on modern hardware — no per-packet allocation in the hot path, scoring runs on window boundaries. memory floor is roughly the size of the resolver cache table.
+
+## Signals
+
+SIGHUP reloads config without dropping the capture handle; in-flight windows complete under the old config, new windows start under the new one.
