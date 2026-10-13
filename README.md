@@ -68,3 +68,7 @@ dns is the one channel almost every host is allowed to use. malware exploits tha
 ## Alert anatomy
 
 alerts look like `{"client":"10.0.0.42","domain":"x9q2.xyz","score":0.91,"reasons":["high_entropy","dga_shape"]}`. they fire when score holds above threshold for N consecutive windows — tune N, not the score, for quieter networks.
+
+## Performance
+
+passive capture costs near zero on modern hardware — no per-packet allocation in the hot path, scoring runs on window boundaries. memory floor is roughly the size of the resolver cache table.
