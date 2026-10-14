@@ -95,3 +95,20 @@ fn main() -> ExitCode {
             }
         },
         "watch" => run_reader(BufReader::new(io::stdin().lock()), &config, cfg_path.as_deref(), verbose, true),
+        "selftest" => selftest(),
+        "config" => {
+            println!("{}", Config::default_json());
+            ExitCode::SUCCESS
+        }
+        "-h" | "--help" | "help" => {
+            print!("{USAGE}");
+            ExitCode::SUCCESS
+        }
+        other => {
+            eprintln!("sentinel-dns: unknown command {other:?}\n");
+            print!("{USAGE}");
+            ExitCode::from(2)
+        }
+    }
+}
+
