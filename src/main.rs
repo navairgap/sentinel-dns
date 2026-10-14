@@ -44,3 +44,33 @@ OPTIONS:
     -v, --verbose           print skipped-packet reasons to stderr
 ";
 
+fn main() -> ExitCode {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let Some(cmd) = args.first().map(String::as_str) else {
+        print!("{USAGE}");
+        return ExitCode::from(2);
+    };
+
+    let verbose = args.iter().any(|a| a == "-v" || a == "--verbose");
+    let cfg_path = args
+        .iter()
+        .position(|a| a == "-c" || a == "--config")
+        .and_then(|i| args.get(i + 1))
+        .map(PathBuf::from);
+
+    let config = match &cfg_path {
+        Some(p) => match Config::load(p) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("sentinel-dns: {e}");
+                return ExitCode::FAILURE;
+            }
+        },
+        None => Config::default(),
+    };
+
+    // SIGHUP asks the loop to reload the config between windows.
+    unsafe {
+        libc::signal(libc::SIGHUP, on_hup as usize);
+    }
+
