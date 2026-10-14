@@ -80,3 +80,22 @@ pub fn extract_query(frame: &[u8]) -> Result<Option<Query>, ParseError> {
 
 /// Parse a DNS message: header + first question. Returns (name, qtype,
 /// is_response, rcode).
+fn parse_dns_message(msg: &[u8]) -> Result<(String, u16, bool, u8), ParseError> {
+    if msg.len() < 12 {
+        return Err(ParseError::TooShort);
+    }
+    let flags = u16::from_be_bytes([msg[2], msg[3]]);
+    let is_response = flags & 0x8000 != 0;
+    let rcode = (flags & 0x000f) as u8;
+    let qdcount = u16::from_be_bytes([msg[4], msg[5]]) as usize;
+    if qdcount == 0 {
+        return Err(ParseError::MalformedName);
+    }
+    let (name, end) = read_name(msg, 12)?;
+    if end + 4 > msg.len() {
+        return Err(ParseError::TooShort);
+    }
+    let qtype = u16::from_be_bytes([msg[end], msg[end + 1]]);
+    Ok((name, qtype, is_response, rcode))
+}
+
