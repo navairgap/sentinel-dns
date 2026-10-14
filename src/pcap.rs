@@ -4,3 +4,11 @@
 
 use std::io::{self, Read};
 
+/// One captured packet with its timestamp.
+#[derive(Debug, Clone)]
+pub struct Packet {
+    pub ts_sec: u32,
+    pub ts_usec: u32,
+    pub data: Vec<u8>,
+}
+
