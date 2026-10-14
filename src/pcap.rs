@@ -52,3 +52,11 @@ impl<R: Read> PcapReader<R> {
         Ok(PcapReader { inner, swapped, linktype, peeked: None })
     }
 
+    fn read_u32(&mut self, b: [u8; 4]) -> u32 {
+        if self.swapped {
+            u32::from_le_bytes(b).swap_bytes()
+        } else {
+            u32::from_le_bytes(b)
+        }
+    }
+
