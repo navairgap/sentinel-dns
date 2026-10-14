@@ -232,3 +232,60 @@ fn emit_due(
     }
 }
 
+/// Build a synthetic capture: one clean client, one DGA offender. Runs the
+/// full pipeline over it and verifies exactly one alert fires, for exactly
+/// the offender. Exits non-zero on any assertion failure — CI runs this.
+fn selftest() -> ExitCode {
+    let mut packets: Vec<(u32, u32, Vec<u8>)> = Vec::new();
+    let base = 1_700_000_000u32;
+
+    for i in 0..30 {
+        let name = format!("api{i}.github.com");
+        let q = dns::build_query(i as u16, &name, 1);
+        let frame = pcap::udp_frame([10, 0, 0, 8], [1, 1, 1, 1], 40000, 53, &q);
+        packets.push((base, 0, frame));
+    }
+    for i in 0..25 {
+        let name = format!("xq7z9w2k1v4b8-{i}.example.xyz");
+        let q = dns::build_query(1000 + i as u16, &name, 1);
+        let frame = pcap::udp_frame([10, 0, 0, 7], [1, 1, 1, 1], 40001, 53, &q);
+        packets.push((base, 1000 + i, frame));
+        let resp = dns::build_response(&q, 3);
+        let rframe = pcap::udp_frame([1, 1, 1, 1], [10, 0, 0, 7], 53, 40001, &resp);
+        packets.push((base, 2000 + i, rframe));
+    }
+
+    let bytes = pcap::build_pcap(false, &packets);
+    let cfg = Config { score_threshold: 0.5, windows_before_alert: 1, ..Config::default() };
+
+    let mut sink = Vec::new();
+    let mut tracker = Tracker::new(cfg.window_seconds);
+    let mut consecutive = std::collections::HashMap::new();
+    let mut fired = std::collections::HashMap::new();
+    let mut reader = match pcap::PcapReader::new(&bytes[..]) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("selftest: pcap parse failed: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    while let Ok(Some(pkt)) = reader.next_packet() {
+        if let Ok(Some(q)) = dns::extract_query(&pkt.data) {
+            tracker.observe_at(&q, pkt.ts_sec as u64);
+        }
+    }
+    emit_due(&mut tracker, u64::MAX, &cfg, &mut consecutive, &mut fired, &mut sink);
+
+    let text = String::from_utf8_lossy(&sink);
+    let alerts: Vec<&str> = text.lines().filter(|l| !l.is_empty()).collect();
+    if alerts.len() != 1 {
+        eprintln!("selftest: expected exactly 1 alert, got {}", alerts.len());
+        return ExitCode::FAILURE;
+    }
+    if !alerts[0].contains("\"client\":\"10.0.0.7\"") {
+        eprintln!("selftest: alert fired for the wrong client: {}", alerts[0]);
+        return ExitCode::FAILURE;
+    }
+    println!("selftest OK — 1 alert, correct client: {}", alerts[0]);
+    ExitCode::SUCCESS
+}
