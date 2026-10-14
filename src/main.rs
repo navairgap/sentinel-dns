@@ -74,3 +74,4 @@ fn main() -> ExitCode {
         libc::signal(libc::SIGHUP, on_hup as usize);
     }
 
+    match cmd {
