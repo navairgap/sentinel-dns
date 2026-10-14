@@ -170,6 +170,10 @@ fn run_reader<R: io::Read>(
 
         match dns::extract_query(&pkt.data) {
             Ok(Some(q)) => {
+                if verbose {
+                    eprintln!("pkt {}.{:06} {} qtype={} {}", pkt.ts_sec, pkt.ts_usec, q.name, q.qtype,
+                        if q.is_nxdomain() { "NXDOMAIN" } else { "" });
+                }
                 if config.is_trusted(q.client) {
                     continue;
                 }
