@@ -75,3 +75,22 @@ fn main() -> ExitCode {
     }
 
     match cmd {
+        "analyze" => match args.get(1) {
+            Some(file) => run_reader(
+                BufReader::new(match std::fs::File::open(file) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        eprintln!("sentinel-dns: {file}: {e}");
+                        return ExitCode::FAILURE;
+                    }
+                }),
+                &config,
+                cfg_path.as_deref(),
+                verbose,
+                false,
+            ),
+            None => {
+                eprintln!("sentinel-dns: analyze needs a pcap file");
+                ExitCode::from(2)
+            }
+        },
