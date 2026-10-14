@@ -67,3 +67,9 @@ impl Config {
         Some(cfg)
     }
 
+    pub fn is_trusted(&self, client: [u8; 4]) -> bool {
+        let s = client.map(|b| b.to_string()).join(".");
+        self.trusted_clients.iter().any(|t| *t == s)
+    }
+}
+
