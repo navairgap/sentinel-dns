@@ -21,3 +21,34 @@ pub struct PcapReader<R> {
 }
 
 impl<R: Read> PcapReader<R> {
+    /// Parse the 24-byte global header. Supports little- and big-endian
+    /// captures; nanosecond magic is rejected with a clear error.
+    pub fn new(mut inner: R) -> io::Result<Self> {
+        let mut gh = [0u8; 24];
+        inner.read_exact(&mut gh)?;
+        let magic = u32::from_le_bytes([gh[0], gh[1], gh[2], gh[3]]);
+        let (swapped, ok) = match magic {
+            0xa1b2c3d4 => (false, true),
+            0xd4c3b2a1 => (true, true),
+            _ => (false, false),
+        };
+        if !ok {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "not a classic pcap (bad magic; pcapng is unsupported)",
+            ));
+        }
+        let linktype = if swapped {
+            u32::from_le_bytes([gh[20], gh[21], gh[22], gh[23]])
+        } else {
+            u32::from_le_bytes([gh[20], gh[21], gh[22], gh[23]])
+        };
+        if linktype != 1 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("unsupported linktype {linktype} (only Ethernet=1)"),
+            ));
+        }
+        Ok(PcapReader { inner, swapped, linktype, peeked: None })
+    }
+
