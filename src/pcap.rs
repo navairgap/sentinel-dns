@@ -12,3 +12,12 @@ pub struct Packet {
     pub data: Vec<u8>,
 }
 
+/// Incremental reader over a pcap byte stream (file or pipe).
+pub struct PcapReader<R> {
+    inner: R,
+    swapped: bool,
+    linktype: u32,
+    peeked: Option<u8>,
+}
+
+impl<R: Read> PcapReader<R> {
