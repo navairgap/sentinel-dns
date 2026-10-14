@@ -114,3 +114,8 @@ pub struct Tracker {
     pub windows: HashMap<u64, HashMap<[u8; 4], WindowStats>>,
 }
 
+impl Tracker {
+    pub fn new(window_seconds: u64) -> Self {
+        Tracker { window_seconds: window_seconds.max(1), windows: HashMap::new() }
+    }
+
