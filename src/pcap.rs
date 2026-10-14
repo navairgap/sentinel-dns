@@ -123,3 +123,30 @@ pub fn build_pcap(swapped: bool, packets: &[(u32, u32, Vec<u8>)]) -> Vec<u8> {
     out
 }
 
+/// Wrap a UDP payload in Ethernet + IPv4 + UDP headers the way a capture
+/// would see it. Checksums are zero — captures don't require valid ones.
+pub fn udp_frame(src_ip: [u8; 4], dst_ip: [u8; 4], sport: u16, dport: u16, payload: &[u8]) -> Vec<u8> {
+    let mut f = Vec::new();
+    f.extend_from_slice(&[0xde, 0xad, 0xbe, 0xef, 0x00, 0x01]); // dst mac
+    f.extend_from_slice(&[0x6a, 0x3f, 0x11, 0x22, 0x33, 0x44]); // src mac
+    f.extend_from_slice(&[0x08, 0x00]); // ethertype ipv4
+    let ihl_ver = 0x45u8;
+    let total = 20 + 8 + payload.len();
+    f.push(ihl_ver);
+    f.push(0);
+    f.extend_from_slice(&(total as u16).to_be_bytes());
+    f.extend_from_slice(&[0x00, 0x01]); // id
+    f.extend_from_slice(&[0x00, 0x00]); // flags/frag
+    f.push(64); // ttl
+    f.push(17); // proto udp
+    f.extend_from_slice(&[0, 0]); // checksum (ignored)
+    f.extend_from_slice(&src_ip);
+    f.extend_from_slice(&dst_ip);
+    f.extend_from_slice(&sport.to_be_bytes());
+    f.extend_from_slice(&dport.to_be_bytes());
+    f.extend_from_slice(&((8 + payload.len()) as u16).to_be_bytes());
+    f.extend_from_slice(&[0, 0]);
+    f.extend_from_slice(payload);
+    f
+}
+
