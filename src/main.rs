@@ -22,3 +22,9 @@ use alert::Alert;
 use config::Config;
 use score::{Tracker, window_score};
 
+static RELOAD: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn on_hup(_sig: i32) {
+    RELOAD.store(true, Ordering::SeqCst);
+}
+
