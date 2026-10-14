@@ -69,3 +69,30 @@ impl<R: Read> PcapReader<R> {
         Ok(b[0])
     }
 
+    /// Read the next packet record; `Ok(None)` on clean end of stream.
+    /// Truncated trailing data (a capture cut mid-write) ends the stream
+    /// instead of erroring — important for live `tcpdump` pipes.
+    pub fn next_packet(&mut self) -> io::Result<Option<Packet>> {
+        let mut hdr = [0u8; 16];
+        let mut filled = 0usize;
+        while filled < 16 {
+            match self.next_byte() {
+                Ok(b) => { hdr[filled] = b; filled += 1; }
+                Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {
+                    return if filled == 0 { Ok(None) } else { Ok(None) };
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        let ts_sec = self.read_u32([hdr[0], hdr[1], hdr[2], hdr[3]]);
+        let ts_usec = self.read_u32([hdr[4], hdr[5], hdr[6], hdr[7]]);
+        let incl_len = self.read_u32([hdr[8], hdr[9], hdr[10], hdr[11]]) as usize;
+        if incl_len > 16 * 1024 * 1024 {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "packet too large"));
+        }
+        let mut data = vec![0u8; incl_len];
+        self.inner.read_exact(&mut data)?;
+        Ok(Some(Packet { ts_sec, ts_usec, data }))
+    }
+}
+
