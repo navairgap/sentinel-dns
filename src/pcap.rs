@@ -60,3 +60,12 @@ impl<R: Read> PcapReader<R> {
         }
     }
 
+    fn next_byte(&mut self) -> io::Result<u8> {
+        if let Some(b) = self.peeked.take() {
+            return Ok(b);
+        }
+        let mut b = [0u8; 1];
+        self.inner.read_exact(&mut b)?;
+        Ok(b[0])
+    }
+
