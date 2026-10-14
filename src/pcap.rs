@@ -123,10 +123,10 @@ pub fn build_pcap(swapped: bool, packets: &[(u32, u32, Vec<u8>)]) -> Vec<u8> {
     be32(65535, &mut out); // snaplen
     be32(1, &mut out); // linktype: ethernet
     for (ts_sec, ts_usec, data) in packets {
-        be(*ts_sec, &mut out);
-        be(*ts_usec, &mut out);
-        be(data.len() as u32, &mut out);
-        be(data.len() as u32, &mut out);
+        be32(*ts_sec, &mut out);
+        be32(*ts_usec, &mut out);
+        be32(data.len() as u32, &mut out);
+        be32(data.len() as u32, &mut out);
         out.extend_from_slice(data);
     }
     out
