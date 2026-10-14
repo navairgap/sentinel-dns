@@ -94,3 +94,4 @@ fn main() -> ExitCode {
                 ExitCode::from(2)
             }
         },
+        "watch" => run_reader(BufReader::new(io::stdin().lock()), &config, cfg_path.as_deref(), verbose, true),
