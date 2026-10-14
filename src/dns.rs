@@ -42,3 +42,41 @@ impl std::fmt::Display for ParseError {
 
 impl std::error::Error for ParseError {}
 
+/// Extract the DNS query from a captured Ethernet/IPv4/UDP frame.
+/// Returns `Ok(None)` for non-DNS traffic so callers can skip quietly.
+pub fn extract_query(frame: &[u8]) -> Result<Option<Query>, ParseError> {
+    if frame.len() < 14 + 20 + 8 {
+        return Err(ParseError::TooShort);
+    }
+    if frame[12] != 0x08 || frame[13] != 0x00 {
+        return Ok(None); // not IPv4
+    }
+    let ip = &frame[14..];
+    let ihl = ((ip[0] & 0x0f) as usize) * 4;
+    if ip.len() < ihl + 8 {
+        return Err(ParseError::TooShort);
+    }
+    if ip[9] != 17 {
+        return Err(ParseError::NotUdp);
+    }
+    let src_ip = [ip[12], ip[13], ip[14], ip[15]];
+    let dst_ip = [ip[16], ip[17], ip[18], ip[19]];
+    let udp = &ip[ihl..];
+    let sport = u16::from_be_bytes([udp[0], udp[1]]);
+    let dport = u16::from_be_bytes([udp[2], udp[3]]);
+    let (client, server, dns) = if dport == 53 {
+        (src_ip, dst_ip, &udp[8..])
+    } else if sport == 53 {
+        (dst_ip, src_ip, &udp[8..])
+    } else {
+        return Err(ParseError::NotDnsPort);
+    };
+    let q = parse_dns_message(dns)?;
+    Ok(Some(Query {
+        name: q.0, qtype: q.1, client, server,
+        is_response: q.2, rcode: q.3,
+    }))
+}
+
+/// Parse a DNS message: header + first question. Returns (name, qtype,
+/// is_response, rcode).
