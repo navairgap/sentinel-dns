@@ -18,3 +18,22 @@ pub struct Alert {
     pub nxdomains: u64,
 }
 
+impl Alert {
+    /// One JSON object per line — the whole contract.
+    pub fn to_jsonl(&self) -> String {
+        let mut s = String::new();
+        s.push_str("{\"v\":1,\"client\":\"");
+        s.push_str(&self.client);
+        let _ = write!(s, "\",\"window\":{},\"score\":{:.2}", self.window_start, self.score);
+        s.push_str(",\"reasons\":[");
+        for (i, r) in self.reasons.iter().enumerate() {
+            if i > 0 {
+                s.push(',');
+            }
+            let _ = write!(s, "\"{r}\"");
+        }
+        let _ = write!(s, "],\"queries\":{},\"nxdomains\":{}}}", self.queries, self.nxdomains);
+        s
+    }
+}
+
