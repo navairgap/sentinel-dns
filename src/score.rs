@@ -148,7 +148,6 @@ impl Tracker {
     }
 }
 
-}
 
 #[cfg(test)]
 mod tests {
