@@ -71,7 +71,7 @@ fn main() -> ExitCode {
 
     // SIGHUP asks the loop to reload the config between windows.
     unsafe {
-        libc::signal(libc::SIGHUP, on_hup as usize);
+        libc::signal(libc::SIGHUP, on_hup as *const () as usize);
     }
 
     match cmd {
