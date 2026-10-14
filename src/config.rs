@@ -35,3 +35,9 @@ impl Config {
             .to_string()
     }
 
+    pub fn load(path: &Path) -> io::Result<Config> {
+        let text = fs::read_to_string(path)?;
+        Self::from_json(&text)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, format!("bad config {path:?}")))
+    }
+
