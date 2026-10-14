@@ -29,3 +29,9 @@ impl Default for Config {
 }
 
 impl Config {
+    pub fn default_json() -> String {
+        "{\n  \"window_seconds\": 60,\n  \"score_threshold\": 0.6,\n  \
+\"windows_before_alert\": 3,\n  \"trusted_clients\": [],\n  \"webhook_url\": \"\"\n}"
+            .to_string()
+    }
+
