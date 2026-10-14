@@ -1,0 +1,9 @@
+[package]
+name = "sentinel-dns"
+version = "0.1.0"
+edition = "2021"
+description = "passive DNS exfiltration and DGA detection — resolver-side, no cloud lookups"
+license = "MIT"
+
+[dependencies]
+libc = "0.2"
