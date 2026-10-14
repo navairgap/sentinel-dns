@@ -8,3 +8,12 @@ use std::collections::HashMap;
 
 use crate::dns::Query;
 
+/// One client inside one scoring window.
+#[derive(Debug, Default)]
+pub struct WindowStats {
+    pub queries: u64,
+    pub nxdomains: u64,
+    pub suspicious: u64,
+    pub reasons: Vec<String>,
+}
+
