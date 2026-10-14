@@ -1,78 +1,101 @@
 # sentinel-dns
 
-Passive DNS query logger and analyzer for your home LAN
+passive DNS exfiltration and DGA detection, at the resolver. one static
+binary, zero cloud lookups, works air-gapped.
 
-> 🚧 **Status: planning** — architecture and README first, code next.
+sentinel reads pcap data — an offline capture, or a live `tcpdump` pipe —
+extracts DNS questions, and scores each client's behavior inside rolling
+time windows. many bad signals from one host inside one minute is what an
+alert is made of; single weird domains are noise and stay quiet.
 
-## Why
+## install
 
-DNS is where most malware, trackers, and phishing start. This tool passively watches every DNS query on your own network and flags the suspicious ones — no packet injection, no external services, everything stays local.
+```bash
+cargo build --release
+sudo cp target/release/sentinel-dns /usr/local/bin/
+```
 
-## Planned features
+live capture needs root (or `CAP_NET_RAW` for tcpdump); offline analysis
+runs as anyone.
 
-- Capture DNS queries on the LAN (passive sniff or resolver log import)
-- Match domains against blocklists and flag rare/typo-squatted lookups
-- Per-device query profiles — know what each device talks to
-- Daily report: top domains, new domains, suspicious hits
+## usage
 
-## Stack
+```bash
+# analyze an offline capture
+sentinel-dns analyze capture.pcap
 
-`python` `scapy` `linux`
+# watch live resolver traffic (the intended deployment)
+sudo tcpdump -i eth0 -w - port 53 | sentinel-dns watch
 
-## Notes
+# verify your build sees what it should
+sentinel-dns selftest
 
-Design docs first, then the sniffer. Follows SentinelWiFi's passive-only rules.
+# print a default config to start from
+sentinel-dns config > sentinel.json
+```
 
-## License
+alerts are one JSON object per line on stdout:
 
-MIT, see [LICENSE](LICENSE).
+```json
+{"v":1,"client":"10.0.0.42","window":1700000000,"score":0.90,
+ "reasons":["sustained_dga","nxdomain_burst"],"queries":45,"nxdomains":41}
+```
 
----
-maintained · verified 2026-09-30
+pipe them to a file, a SIEM, or anything that reads JSONL. an optional
+`webhook_url` in the config POSTs each alert onward (plain http in v1).
 
-## How detection works
+## configuration
 
-1. Capture outbound DNS queries passively.
-2. Score entropy, domain age signals, and NXDOMAIN ratio per client.
-3. Alert when a client's score crosses the threshold for N consecutive windows.
+flat JSON, loaded with `-c`:
 
-Tuning lives in `config.yml` — lower the window for noisier networks.
+| key | default | meaning |
+| --- | --- | --- |
+| `window_seconds` | 60 | scoring window length |
+| `score_threshold` | 0.6 | window score that counts as bad |
+| `windows_before_alert` | 3 | consecutive bad windows before firing |
+| `trusted_clients` | [] | IPs never scored (your resolvers, monitoring) |
+| `webhook_url` | "" | empty = stdout only |
 
-## False positives
+unknown keys are ignored; the format is forward-compatible. send SIGHUP to
+reload the config without dropping the capture.
 
-CDNs and DoH forwarders score high on entropy by nature. Exclude known resolver IPs in `config.yml` under `trusted_resolvers`, and require the alert threshold to hold for at least 3 consecutive windows before paging anyone.
+## how detection works
 
+1. **per domain**: Shannon entropy, digit ratio, DGA shape, vowel absence,
+   cheap-TLD weight — combined into a 0..1 suspicion score
+2. **per client per window**: query volume, NXDOMAIN ratio, count of
+   high-suspicion names — a window is *bad* only on sustained patterns
+3. **per client over windows**: `windows_before_alert` consecutive bad
+   windows produce exactly one alert until the client goes clean
 
-## Privacy
+trusted resolvers and CDNs score high by nature — put them in
+`trusted_clients` and require consecutive windows; both knobs are the
+false-positive budget.
 
-DNS metadata stays local — nothing leaves the box except your alerts. The scorer needs no cloud lookups, which also means it works on air-gapped networks.
+## v1 boundaries (honest)
 
+- UDP port 53 only; DoH/DoT leave no resolver-side trace to watch
+  (block outbound 853/443 to unknown resolvers at the firewall instead)
+- plain-http webhooks; TLS would need a dependency
+- Ethernet IPv4 captures; IPv6 and pcapng are roadmap
 
-## Requirements
+## selftest
 
-python 3.9+, root or CAP_NET_RAW for capture, ~30MB ram. a raspberry pi zero runs it fine on a home network.
+`sentinel-dns selftest` synthesizes a capture — one clean client, one DGA
+offender — runs the full pipeline, and fails unless exactly one alert
+fires for exactly the offender. CI runs it on every push.
 
+## tests
 
-## Testing the install
+```bash
+cargo test
+```
 
-run `sentinel-dns --selftest`: it resolves ten known-good domains and one deliberately-bad one, and verifies the scorer fires on exactly the bad one. if selftest passes, your install is good.
+pcap round-trips, DNS name decompression (including pointer-loop
+termination), entropy math, scorer behavior on crafted domains, window
+logic, config parsing, and alert formatting are all covered — unprivileged,
+no network, no fixtures.
 
-## Motivation
+## license
 
-dns is the one channel almost every host is allowed to use. malware exploits that — long, random, rarely-repeated domains are cheap to generate and hard to miss at the resolver. watching dns catches what firewalls don't.
-
-## Motivation
-
-dns is the one channel almost every host is allowed to use. malware exploits that — long, random, rarely-repeated domains are cheap to generate and hard to miss at the resolver. watching dns catches what firewalls don't.
-
-## Alert anatomy
-
-alerts look like `{"client":"10.0.0.42","domain":"x9q2.xyz","score":0.91,"reasons":["high_entropy","dga_shape"]}`. they fire when score holds above threshold for N consecutive windows — tune N, not the score, for quieter networks.
-
-## Performance
-
-passive capture costs near zero on modern hardware — no per-packet allocation in the hot path, scoring runs on window boundaries. memory floor is roughly the size of the resolver cache table.
-
-## Signals
-
-SIGHUP reloads config without dropping the capture handle; in-flight windows complete under the old config, new windows start under the new one.
+MIT
