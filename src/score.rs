@@ -107,3 +107,10 @@ pub fn window_score(w: &WindowStats) -> (f64, Vec<String>) {
     (score.min(1.0), reasons)
 }
 
+/// Rolling per-client windows. `tick` is seconds; `window_seconds` groups
+/// packets into buckets keyed by ts_sec / window.
+pub struct Tracker {
+    pub window_seconds: u64,
+    pub windows: HashMap<u64, HashMap<[u8; 4], WindowStats>>,
+}
+
