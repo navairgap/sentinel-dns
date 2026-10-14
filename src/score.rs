@@ -77,3 +77,33 @@ pub fn domain_score(name: &str) -> (f64, Vec<String>) {
     (score.min(1.0), reasons)
 }
 
+/// Map a client's accumulated window into a final alert score + reasons.
+pub fn window_score(w: &WindowStats) -> (f64, Vec<String>) {
+    let mut score = 0.0f64;
+    let mut reasons = Vec::new();
+    if w.queries == 0 {
+        return (0.0, reasons);
+    }
+    if w.queries >= 20 && w.suspicious * 3 >= w.queries {
+        score += 0.5;
+        reasons.push("sustained_dga");
+    }
+    let nx = w.nxdomains as f64 / w.queries as f64;
+    if w.queries >= 10 && nx > 0.5 {
+        score += 0.3;
+        reasons.push("nxdomain_burst");
+        if nx > 0.8 {
+            score += 0.1;
+            reasons.push("nxdomain_flood");
+        }
+    }
+    let mut all = w.reasons.clone();
+    all.sort();
+    all.dedup();
+    if !all.is_empty() {
+        score += 0.1;
+        reasons.push("flag_domains");
+    }
+    (score.min(1.0), reasons)
+}
+
