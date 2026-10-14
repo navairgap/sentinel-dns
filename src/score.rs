@@ -119,3 +119,17 @@ impl Tracker {
         Tracker { window_seconds: window_seconds.max(1), windows: HashMap::new() }
     }
 
+    pub fn observe_at(&mut self, q: &Query, ts: u64) {
+        let key = ts / self.window_seconds;
+        let client = self.windows.entry(key).or_default().entry(q.client).or_default();
+        client.queries += 1;
+        if q.is_nxdomain() {
+            client.nxdomains += 1;
+        }
+        let (s, reasons) = domain_score(&q.name);
+        if s >= 0.5 {
+            client.suspicious += 1;
+            client.reasons.extend(reasons);
+        }
+    }
+
