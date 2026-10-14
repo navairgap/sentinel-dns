@@ -133,3 +133,20 @@ impl Tracker {
         }
     }
 
+    /// Pop all windows strictly older than `before` and return them.
+    pub fn drain_older_than(&mut self, before: u64) -> Vec<(u64, [u8; 4], WindowStats)> {
+        let keys: Vec<u64> = self.windows.keys().copied().filter(|k| *k < before).collect();
+        let mut out = Vec::new();
+        for k in keys {
+            if let Some(clients) = self.windows.remove(&k) {
+                for (client, stats) in clients {
+                    out.push((k, client, stats));
+                }
+            }
+        }
+        out
+    }
+}
+
+}
+
