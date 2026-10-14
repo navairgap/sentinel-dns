@@ -7,3 +7,14 @@ use std::io;
 use std::net::TcpStream;
 use std::time::Duration;
 
+/// A firing: one client crossed the threshold for a window.
+#[derive(Debug, Clone)]
+pub struct Alert {
+    pub client: String,
+    pub window_start: u64,
+    pub score: f64,
+    pub reasons: Vec<String>,
+    pub queries: u64,
+    pub nxdomains: u64,
+}
+
