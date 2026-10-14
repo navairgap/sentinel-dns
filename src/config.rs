@@ -41,3 +41,29 @@ impl Config {
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, format!("bad config {path:?}")))
     }
 
+    pub fn from_json(text: &str) -> Option<Config> {
+        let map = parse_object(text)?;
+        let mut cfg = Config::default();
+        if let Some(v) = map.get("window_seconds") {
+            cfg.window_seconds = v.parse().ok()?;
+        }
+        if let Some(v) = map.get("score_threshold") {
+            cfg.score_threshold = v.parse().ok()?;
+        }
+        if let Some(v) = map.get("windows_before_alert") {
+            cfg.windows_before_alert = v.parse().ok()?;
+        }
+        if let Some(v) = map.get("webhook_url") {
+            cfg.webhook_url = v.to_string();
+        }
+        if let Some(v) = map.get("trusted_clients") {
+            cfg.trusted_clients = v
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(String::from)
+                .collect();
+        }
+        Some(cfg)
+    }
+
