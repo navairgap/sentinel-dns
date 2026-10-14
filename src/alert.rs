@@ -37,3 +37,11 @@ impl Alert {
     }
 }
 
+/// Fire-and-forget webhook POST. Failures are written to stderr and never
+/// stop the pipeline — alerting must not become the outage.
+pub fn send_webhook(url: &str, body: &str) {
+    if let Err(e) = try_send(url, body) {
+        eprintln!("sentinel-dns: webhook failed: {e}");
+    }
+}
+
