@@ -96,3 +96,30 @@ impl<R: Read> PcapReader<R> {
     }
 }
 
+/// Build a pcap byte stream (global header + records). Used by tests and
+/// by `selftest` to synthesize captures without fixture files.
+pub fn build_pcap(swapped: bool, packets: &[(u32, u32, Vec<u8>)]) -> Vec<u8> {
+    let mut out = Vec::new();
+    let magic: u32 = 0xa1b2c3d4;
+    let be = |v: u32, out: &mut Vec<u8>| {
+        if swapped {
+            out.extend_from_slice(&v.swap_bytes().to_le_bytes());
+        } else {
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+    };
+    be(magic, &mut out);
+    for v in [2u32, 4, 0, 0, 65535] {
+        be(v, &mut out);
+    }
+    be(1, &mut out); // linktype ethernet
+    for (ts_sec, ts_usec, data) in packets {
+        be(*ts_sec, &mut out);
+        be(*ts_usec, &mut out);
+        be(data.len() as u32, &mut out);
+        be(data.len() as u32, &mut out);
+        out.extend_from_slice(data);
+    }
+    out
+}
+
