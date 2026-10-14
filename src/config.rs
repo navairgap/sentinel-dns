@@ -16,3 +16,15 @@ pub struct Config {
     pub webhook_url: String,
 }
 
+impl Default for Config {
+    fn default() -> Self {
+        Config {
+            window_seconds: 60,
+            score_threshold: 0.6,
+            windows_before_alert: 3,
+            trusted_clients: vec![],
+            webhook_url: String::new(),
+        }
+    }
+}
+
