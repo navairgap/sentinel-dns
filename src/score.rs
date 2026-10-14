@@ -37,3 +37,43 @@ pub fn entropy(s: &str) -> f64 {
     h
 }
 
+/// Per-domain suspicion score in 0.0..=1.0, plus the reasons that fired.
+pub fn domain_score(name: &str) -> (f64, Vec<String>) {
+    let mut score = 0.0f64;
+    let mut reasons = Vec::new();
+    let lower = name.to_lowercase();
+    let core = lower.split('.').next().unwrap_or("");
+
+    let ent = entropy(core);
+    if ent > 3.5 && core.len() >= 8 {
+        score += 0.45;
+        reasons.push("high_entropy");
+    }
+    let digits = core.chars().filter(|c| c.is_ascii_digit()).count();
+    if core.len() >= 6 && digits as f64 / core.len() as f64 > 0.3 {
+        score += 0.25;
+        reasons.push("digit_heavy");
+    }
+    let unique = core.chars().collect::<std::collections::BTreeSet<_>>().len();
+    if core.len() >= 10 && unique >= core.len() - 2 {
+        score += 0.2;
+        reasons.push("dga_shape");
+    }
+    if !core.chars().any(|c| "aeiou".contains(c)) && core.len() >= 6 {
+        score += 0.1;
+        reasons.push("no_vowels");
+    }
+    for tld in [".xyz", ".top", ".buzz", ".icu", ".cam"] {
+        if lower.ends_with(tld) {
+            score += 0.1;
+            reasons.push("cheap_tld");
+            break;
+        }
+    }
+    if core.len() > 40 {
+        score += 0.1;
+        reasons.push("oversize_label");
+    }
+    (score.min(1.0), reasons)
+}
+
