@@ -150,3 +150,62 @@ impl Tracker {
 
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn q(client: [u8; 4], name: &str, nx: bool) -> Query {
+        Query {
+            name: name.to_string(), qtype: 1, client, server: [1, 1, 1, 1],
+            is_response: nx, rcode: if nx { 3 } else { 0 },
+        }
+    }
+
+    #[test]
+    fn entropy_bounds() {
+        assert_eq!(entropy("aaaa"), 0.0);
+        let h = entropy("x9q2z7w1");
+        assert!(h > 2.9 && h <= 3.1);
+    }
+
+    #[test]
+    fn random_dga_scores_high() {
+        let (s, reasons) = domain_score("xq7z9w2k1v4b8.example.xyz");
+        assert!(s >= 0.5, "score {s} reasons {reasons:?}");
+        assert!(reasons.contains(&"high_entropy".to_string()));
+    }
+
+    #[test]
+    fn normal_domain_scores_zero() {
+        let (s, reasons) = domain_score("mail.google.com");
+        assert_eq!(s, 0.0, "reasons {reasons:?}");
+    }
+
+    #[test]
+    fn window_fires_on_dga_burst() {
+        let mut t = Tracker::new(60);
+        for i in 0..25 {
+            let name = format!("xq7z9w2k1v4b8-{i}.example.xyz");
+            t.observe_at(&q([10, 0, 0, 7], &name, true), 1_700_000_000);
+        }
+        let drained = t.drain_older_than(1_700_000_001);
+        assert_eq!(drained.len(), 1);
+        let (_, client, stats) = &drained[0];
+        assert_eq!(client, &[10, 0, 0, 7]);
+        let (s, reasons) = window_score(stats);
+        assert!(s >= 0.5, "score {s} reasons {reasons:?}");
+        assert!(reasons.contains(&"sustained_dga".to_string()));
+        assert!(reasons.contains(&"nxdomain_burst".to_string()));
+    }
+
+    #[test]
+    fn clean_client_stays_quiet() {
+        let mut t = Tracker::new(60);
+        for _ in 0..30 {
+            t.observe_at(&q([10, 0, 0, 8], "api.github.com", false), 1_700_000_000);
+        }
+        let drained = t.drain_older_than(1_700_000_001);
+        let (s, _) = window_score(&drained[0].2);
+        assert_eq!(s, 0.0);
+    }
+}
