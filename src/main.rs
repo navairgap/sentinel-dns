@@ -28,3 +28,19 @@ extern "C" fn on_hup(_sig: i32) {
     RELOAD.store(true, Ordering::SeqCst);
 }
 
+const USAGE: &str = "sentinel-dns — passive DNS exfiltration and DGA detection
+
+USAGE:
+    sentinel-dns <command> [options]
+
+COMMANDS:
+    analyze <file.pcap>     score an offline capture
+    watch                   read a pcap stream from stdin (tcpdump pipe)
+    selftest                synthesize a capture and verify the pipeline
+    config                  print the default configuration
+
+OPTIONS:
+    -c, --config <path>     config file (default: built-in defaults)
+    -v, --verbose           print skipped-packet reasons to stderr
+";
+
