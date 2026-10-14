@@ -40,39 +40,39 @@ pub fn entropy(s: &str) -> f64 {
 /// Per-domain suspicion score in 0.0..=1.0, plus the reasons that fired.
 pub fn domain_score(name: &str) -> (f64, Vec<String>) {
     let mut score = 0.0f64;
-    let mut reasons = Vec::new();
+    let mut reasons: Vec<String> = Vec::new();
     let lower = name.to_lowercase();
     let core = lower.split('.').next().unwrap_or("");
 
     let ent = entropy(core);
     if ent > 3.5 && core.len() >= 8 {
         score += 0.45;
-        reasons.push("high_entropy");
+        reasons.push("high_entropy".to_string());
     }
     let digits = core.chars().filter(|c| c.is_ascii_digit()).count();
     if core.len() >= 6 && digits as f64 / core.len() as f64 > 0.3 {
         score += 0.25;
-        reasons.push("digit_heavy");
+        reasons.push("digit_heavy".to_string());
     }
     let unique = core.chars().collect::<std::collections::BTreeSet<_>>().len();
     if core.len() >= 10 && unique >= core.len() - 2 {
         score += 0.2;
-        reasons.push("dga_shape");
+        reasons.push("dga_shape".to_string());
     }
     if !core.chars().any(|c| "aeiou".contains(c)) && core.len() >= 6 {
         score += 0.1;
-        reasons.push("no_vowels");
+        reasons.push("no_vowels".to_string());
     }
     for tld in [".xyz", ".top", ".buzz", ".icu", ".cam"] {
         if lower.ends_with(tld) {
             score += 0.1;
-            reasons.push("cheap_tld");
+            reasons.push("cheap_tld".to_string());
             break;
         }
     }
     if core.len() > 40 {
         score += 0.1;
-        reasons.push("oversize_label");
+        reasons.push("oversize_label".to_string());
     }
     (score.min(1.0), reasons)
 }
@@ -80,21 +80,21 @@ pub fn domain_score(name: &str) -> (f64, Vec<String>) {
 /// Map a client's accumulated window into a final alert score + reasons.
 pub fn window_score(w: &WindowStats) -> (f64, Vec<String>) {
     let mut score = 0.0f64;
-    let mut reasons = Vec::new();
+    let mut reasons: Vec<String> = Vec::new();
     if w.queries == 0 {
         return (0.0, reasons);
     }
     if w.queries >= 20 && w.suspicious * 3 >= w.queries {
         score += 0.5;
-        reasons.push("sustained_dga");
+        reasons.push("sustained_dga".to_string());
     }
     let nx = w.nxdomains as f64 / w.queries as f64;
     if w.queries >= 10 && nx > 0.5 {
         score += 0.3;
-        reasons.push("nxdomain_burst");
+        reasons.push("nxdomain_burst".to_string());
         if nx > 0.8 {
             score += 0.1;
-            reasons.push("nxdomain_flood");
+            reasons.push("nxdomain_flood".to_string());
         }
     }
     let mut all = w.reasons.clone();
@@ -102,7 +102,7 @@ pub fn window_score(w: &WindowStats) -> (f64, Vec<String>) {
     all.dedup();
     if !all.is_empty() {
         score += 0.1;
-        reasons.push("flag_domains");
+        reasons.push("flag_domains".to_string());
     }
     (score.min(1.0), reasons)
 }
