@@ -99,3 +99,49 @@ fn parse_dns_message(msg: &[u8]) -> Result<(String, u16, bool, u8), ParseError> 
     Ok((name, qtype, is_response, rcode))
 }
 
+/// Decompress a DNS name starting at `offset`. Compression pointers may
+/// jump at most once and the total walk is step-bounded, so hostile
+/// pointer loops terminate instead of hanging the sentinel.
+pub fn read_name(msg: &[u8], offset: usize) -> Result<(String, usize), ParseError> {
+    let mut labels: Vec<String> = Vec::new();
+    let mut pos = offset;
+    let mut jumped = false;
+    let mut steps = 0usize;
+    let mut end_after_name = 0usize;
+    loop {
+        steps += 1;
+        if steps > 128 || pos >= msg.len() {
+            return Err(ParseError::MalformedName);
+        }
+        let len = msg[pos] as usize;
+        if len == 0 {
+            if !jumped {
+                end_after_name = pos + 1;
+            }
+            break;
+        }
+        if len & 0xc0 == 0xc0 {
+            if pos + 1 >= msg.len() {
+                return Err(ParseError::MalformedName);
+            }
+            let ptr = ((len & 0x3f) << 8) | msg[pos + 1] as usize;
+            if jumped {
+                return Err(ParseError::MalformedName); // second jump: refuse
+            }
+            jumped = true;
+            end_after_name = pos + 2;
+            pos = ptr;
+            continue;
+        }
+        if len & 0xc0 != 0 || pos + 1 + len > msg.len() {
+            return Err(ParseError::MalformedName);
+        }
+        match std::str::from_utf8(&msg[pos + 1..pos + 1 + len]) {
+            Ok(s) => labels.push(s.to_string()),
+            Err(_) => return Err(ParseError::MalformedName),
+        }
+        pos += 1 + len;
+    }
+    Ok((labels.join("."), end_after_name))
+}
+
