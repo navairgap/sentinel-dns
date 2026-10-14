@@ -112,3 +112,123 @@ fn main() -> ExitCode {
     }
 }
 
+/// Shared pipeline over any pcap byte source. In `live` mode (stdin pipe)
+/// windows are emitted as time passes; offline, everything drains at the end.
+fn run_reader<R: io::Read>(
+    reader: R,
+    config: &Config,
+    cfg_path: Option<&std::path::Path>,
+    verbose: bool,
+    live: bool,
+) -> ExitCode {
+    let mut reader = match pcap::PcapReader::new(reader) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("sentinel-dns: not a pcap stream: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut tracker = Tracker::new(config.window_seconds);
+    let mut highest_seen_window = 0u64;
+    let mut consecutive: std::collections::HashMap<[u8; 4], u64> = std::collections::HashMap::new();
+    let mut fired: std::collections::HashMap<[u8; 4], u64> = std::collections::HashMap::new();
+    let mut config = config.clone();
+    let stdout = io::stdout();
+    let mut out = io::BufWriter::new(stdout.lock());
+
+    loop {
+        if RELOAD.swap(false, Ordering::SeqCst) {
+            match cfg_path {
+                Some(p) => match Config::load(p) {
+                    Ok(c) => {
+                        config = c;
+                        eprintln!("sentinel-dns: config reloaded from {}", p.display());
+                    }
+                    Err(e) => eprintln!("sentinel-dns: reload failed: {e}"),
+                },
+                None => eprintln!("sentinel-dns: SIGHUP ignored (no -c config path)"),
+            }
+        }
+
+        let pkt = match reader.next_packet() {
+            Ok(Some(p)) => p,
+            Ok(None) => break,
+            Err(e) => {
+                if verbose {
+                    eprintln!("sentinel-dns: stream ended: {e}");
+                }
+                break;
+            }
+        };
+        let ts = pkt.ts_sec as u64;
+        let window = ts / config.window_seconds.max(1);
+        if window > highest_seen_window {
+            highest_seen_window = window;
+            // all windows before the current one are final
+            emit_due(&mut tracker, window, &config, &mut consecutive, &mut fired, &mut out);
+        }
+
+        match dns::extract_query(&pkt.data) {
+            Ok(Some(q)) => {
+                if config.is_trusted(q.client) {
+                    continue;
+                }
+                tracker.observe_at(&q, ts);
+            }
+            Ok(None) => {}
+            Err(e) => {
+                if verbose {
+                    eprintln!("sentinel-dns: skipped packet: {e}");
+                }
+            }
+        }
+        if live {
+            out.flush().ok();
+        }
+    }
+
+    emit_due(&mut tracker, u64::MAX, &config, &mut consecutive, &mut fired, &mut out);
+    out.flush().ok();
+    ExitCode::SUCCESS
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_due(
+    tracker: &mut Tracker,
+    before: u64,
+    config: &Config,
+    consecutive: &mut std::collections::HashMap<[u8; 4], u64>,
+    fired: &mut std::collections::HashMap<[u8; 4], u64>,
+    out: &mut impl Write,
+) {
+    let due = tracker.drain_older_than(before);
+    for (window, client, stats) in due {
+        let (score, reasons) = window_score(&stats);
+        if score >= config.score_threshold {
+            *consecutive.entry(client).or_insert(0) += 1;
+        } else {
+            consecutive.remove(&client);
+        }
+        let streak = *consecutive.get(&client).unwrap_or(&0);
+        let already = *fired.get(&client).unwrap_or(&0);
+        if streak >= config.windows_before_alert && already < streak {
+            let a = Alert {
+                client: client.map(|b| b.to_string()).join("."),
+                window_start: window * config.window_seconds,
+                score,
+                reasons,
+                queries: stats.queries,
+                nxdomains: stats.nxdomains,
+            };
+            writeln!(out, "{}", a.to_jsonl()).ok();
+            if !config.webhook_url.is_empty() {
+                alert::send_webhook(&config.webhook_url, &a.to_jsonl());
+            }
+            fired.insert(client, streak);
+        }
+        if score < config.score_threshold {
+            fired.remove(&client);
+        }
+    }
+}
+
