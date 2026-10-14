@@ -16,7 +16,6 @@ pub struct Packet {
 pub struct PcapReader<R> {
     inner: R,
     swapped: bool,
-    linktype: u32,
     peeked: Option<u8>,
 }
 
@@ -49,7 +48,7 @@ impl<R: Read> PcapReader<R> {
                 format!("unsupported linktype {linktype} (only Ethernet=1)"),
             ));
         }
-        Ok(PcapReader { inner, swapped, linktype, peeked: None })
+        Ok(PcapReader { inner, swapped, peeked: None })
     }
 
     fn read_u32(&mut self, b: [u8; 4]) -> u32 {
