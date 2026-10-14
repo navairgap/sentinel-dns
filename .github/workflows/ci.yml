@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: build
+        run: cargo build --verbose
+      - name: test
+        run: cargo test --verbose
+      - name: selftest
+        run: cargo run --quiet -- selftest
+      - name: clippy
+        run: cargo clippy -- -D warnings
+      - name: format
+        run: cargo fmt
+      - name: upload formatted sources
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fmt-sentinel
+          path: src/
