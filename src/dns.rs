@@ -165,3 +165,11 @@ pub fn build_query(id: u16, name: &str, qtype: u16) -> Vec<u8> {
     msg
 }
 
+/// Build a matching response with the given rcode (3 = NXDOMAIN).
+pub fn build_response(query: &[u8], rcode: u8) -> Vec<u8> {
+    let mut msg = query.to_vec();
+    msg[2] = 0x81; // QR + RD
+    msg[3] = (msg[3] & 0xf0) | (rcode & 0x0f) | 0x80; // RA
+    msg
+}
+
