@@ -145,3 +145,23 @@ pub fn read_name(msg: &[u8], offset: usize) -> Result<(String, usize), ParseErro
     Ok((labels.join("."), end_after_name))
 }
 
+/// Build a raw DNS query message (single A-record question). Shared by
+/// tests and the selftest synthesizer.
+pub fn build_query(id: u16, name: &str, qtype: u16) -> Vec<u8> {
+    let mut msg = Vec::new();
+    msg.extend_from_slice(&id.to_be_bytes());
+    msg.extend_from_slice(&0x0100u16.to_be_bytes()); // RD set
+    msg.extend_from_slice(&1u16.to_be_bytes());
+    msg.extend_from_slice(&0u16.to_be_bytes());
+    msg.extend_from_slice(&0u16.to_be_bytes());
+    msg.extend_from_slice(&0u16.to_be_bytes());
+    for label in name.split('.') {
+        msg.push(label.len() as u8);
+        msg.extend_from_slice(label.as_bytes());
+    }
+    msg.push(0);
+    msg.extend_from_slice(&qtype.to_be_bytes());
+    msg.extend_from_slice(&1u16.to_be_bytes()); // IN
+    msg
+}
+
