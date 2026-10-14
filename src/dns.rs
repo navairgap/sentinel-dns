@@ -19,3 +19,26 @@ impl Query {
     }
 }
 
+/// Errors from the packet/dns layers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ParseError {
+    TooShort,
+    NotUdp,
+    NotDnsPort,
+    MalformedName,
+}
+
+impl std::fmt::Display for ParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            ParseError::TooShort => "packet too short",
+            ParseError::NotUdp => "not a UDP packet",
+            ParseError::NotDnsPort => "neither side is port 53",
+            ParseError::MalformedName => "malformed dns name",
+        };
+        f.write_str(s)
+    }
+}
+
+impl std::error::Error for ParseError {}
+
