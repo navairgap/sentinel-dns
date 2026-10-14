@@ -73,3 +73,56 @@ impl Config {
     }
 }
 
+/// Parse a flat JSON object into key/value strings. String arrays become
+/// comma-joined values. Nested objects are not supported and fail the
+/// parse — the config stays flat on purpose.
+fn parse_object(text: &str) -> Option<HashMap<String, String>> {
+    let mut map = HashMap::new();
+    let t = text.trim();
+    let t = t.strip_prefix('{')?.strip_suffix('}')?.trim();
+    if t.is_empty() {
+        return Some(map);
+    }
+    let mut rest = t;
+    while !rest.is_empty() {
+        let (key, after) = parse_string(rest)?;
+        let after = after.trim_start();
+        let after = after.strip_prefix(':')?.trim_start();
+        let (value, after) = parse_value(after)?;
+        map.insert(key, value);
+        let after = after.trim_start();
+        if after.is_empty() {
+            break;
+        }
+        rest = after.strip_prefix(',')?.trim_start();
+    }
+    Some(map)
+}
+
+fn parse_string(s: &str) -> Option<(String, &str)> {
+    let s = s.strip_prefix('"')?;
+    let end = s.find('"')?;
+    Some((s[..end].to_string(), &s[end + 1..]))
+}
+
+fn parse_value(s: &str) -> Option<(String, &str)> {
+    if s.starts_with('"') {
+        return parse_string(s);
+    }
+    if s.starts_with('[') {
+        let end = s.find(']')?;
+        let inner = &s[1..end];
+        let joined = inner
+            .split(',')
+            .filter_map(|part| {
+                let part = part.trim();
+                part.strip_prefix('"')?.strip_suffix('"').map(str::to_string)
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        return Some((joined, &s[end + 1..]));
+    }
+    let end = s.find([',', '}']).unwrap_or(s.len());
+    Some((s[..end].trim().to_string(), &s[end..]))
+}
+
