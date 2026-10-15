@@ -99,3 +99,7 @@ no network, no fixtures.
 ## license
 
 MIT
+
+## Operations
+
+run it under systemd with `Restart=always`; the alert stream goes to journald by default. point `StandardOutput=` at a file if you want logrotate to handle retention. SIGHUP reloads the config without dropping the pipe.
