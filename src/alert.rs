@@ -1,10 +1,8 @@
-//! Alerts: JSONL to stdout, optional append to a file, optional webhook.
-//! The webhook is a deliberately small HTTP/1.1 POST over plain TCP —
-//! TLS would need a dependency, and internal webhooks are usually http.
+//! Alerts: JSONL to stdout, optional append to a file, optional HTTPS webhook.
+//! Webhooks require TLS so alert metadata is not sent in cleartext.
 
 use std::fmt::Write as _;
 use std::io;
-use std::net::TcpStream;
 use std::time::Duration;
 
 /// A firing: one client crossed the threshold for a window.
@@ -46,30 +44,30 @@ pub fn send_webhook(url: &str, body: &str) {
 }
 
 fn try_send(url: &str, body: &str) -> io::Result<()> {
-    let rest = url.strip_prefix("http://").ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidInput, "webhook must be http:// in v1 (tls needs a dep)")
-    })?;
-    let (hostport, path) = match rest.find('/') {
-        Some(i) => (&rest[..i], &rest[i..]),
-        None => (rest, "/"),
-    };
-    let (host, port) = match hostport.split_once(':') {
-        Some((h, p)) => (h, p.parse::<u16>().unwrap_or(80)),
-        None => (hostport, 80),
-    };
-    let mut stream = TcpStream::connect_timeout(
-        &std::net::ToSocketAddrs::to_socket_addrs(&(host, port))?
-            .next()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no address"))?,
-        Duration::from_secs(5),
-    )?;
-    use std::io::Write;
-    let req = format!(
-        "POST {path} HTTP/1.1\r\nHost: {hostport}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-        body.len()
-    );
-    stream.write_all(req.as_bytes())?;
-    stream.flush()?;
-    Ok(())
-}
+    if !url.starts_with("https://") {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "webhook URL must use https://",
+        ));
+    }
 
+    // ureq verifies TLS certificates by default. Redirects are not followed,
+    // preventing a configured HTTPS endpoint from redirecting alert contents
+    // to an unexpected destination.
+    let response = ureq::post(url)
+        .timeout(Duration::from_secs(5))
+        .set("Content-Type", "application/json")
+        .send_string(body);
+
+    match response {
+        Ok(_) => Ok(()),
+        Err(ureq::Error::Status(status, _)) => Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("webhook returned HTTP {status}"),
+        )),
+        Err(ureq::Error::Transport(error)) => Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("webhook transport failed: {error}"),
+        )),
+    }
+}
