@@ -38,7 +38,7 @@ impl<R: Read> PcapReader<R> {
             ));
         }
         let linktype = if swapped {
-            u32::from_le_bytes([gh[20], gh[21], gh[22], gh[23]])
+            u32::from_be_bytes([gh[20], gh[21], gh[22], gh[23]])
         } else {
             u32::from_le_bytes([gh[20], gh[21], gh[22], gh[23]])
         };
@@ -78,7 +78,7 @@ impl<R: Read> PcapReader<R> {
             match self.next_byte() {
                 Ok(b) => { hdr[filled] = b; filled += 1; }
                 Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {
-                    return if filled == 0 { Ok(None) } else { Ok(None) };
+                    return Ok(None); // truncated tail: treat as end of stream
                 }
                 Err(e) => return Err(e),
             }
