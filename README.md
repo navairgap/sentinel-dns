@@ -44,6 +44,8 @@ alerts are one JSON object per line on stdout:
 pipe them to a file, a SIEM, or anything that reads JSONL. an optional
 `webhook_url` in the config POSTs each alert onward over HTTPS with certificate verification. HTTP URLs are rejected.
 
+Webhook delivery has a five-second timeout and redirects are disabled, preventing a configured endpoint from forwarding alert data to another host. Failures are logged to stderr but do not stop packet analysis; retain stdout JSONL as the primary alert stream.
+
 ## configuration
 
 flat JSON, loaded with `-c`:
