@@ -51,11 +51,14 @@ fn try_send(url: &str, body: &str) -> io::Result<()> {
         ));
     }
 
-    // ureq verifies TLS certificates by default. Redirects are not followed,
-    // preventing a configured HTTPS endpoint from redirecting alert contents
-    // to an unexpected destination.
-    let response = ureq::post(url)
+    // ureq verifies TLS certificates by default. Disable redirects so a
+    // configured endpoint cannot forward alert contents to another host.
+    let agent = ureq::AgentBuilder::new()
         .timeout(Duration::from_secs(5))
+        .redirects(0)
+        .build();
+    let response = agent
+        .post(url)
         .set("Content-Type", "application/json")
         .send_string(body);
 
@@ -69,5 +72,16 @@ fn try_send(url: &str, body: &str) -> io::Result<()> {
             io::ErrorKind::Other,
             format!("webhook transport failed: {error}"),
         )),
+    }
+}
+
+#[cfg(test)]
+mod webhook_tests {
+    use super::try_send;
+
+    #[test]
+    fn rejects_plain_http_webhooks_before_network_access() {
+        let error = try_send("http://127.0.0.1:9/hook", "{}").unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
     }
 }
