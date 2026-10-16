@@ -42,7 +42,7 @@ alerts are one JSON object per line on stdout:
 ```
 
 pipe them to a file, a SIEM, or anything that reads JSONL. an optional
-`webhook_url` in the config POSTs each alert onward (plain http in v1).
+`webhook_url` in the config POSTs each alert onward over HTTPS with certificate verification. HTTP URLs are rejected.
 
 ## configuration
 
@@ -76,7 +76,7 @@ false-positive budget.
 
 - UDP port 53 only; DoH/DoT leave no resolver-side trace to watch
   (block outbound 853/443 to unknown resolvers at the firewall instead)
-- plain-http webhooks; TLS would need a dependency
+- webhook delivery requires HTTPS; plain HTTP is rejected
 - Ethernet IPv4 captures; IPv6 and pcapng are roadmap
 
 ## selftest
