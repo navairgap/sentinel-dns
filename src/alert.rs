@@ -82,6 +82,6 @@ mod webhook_tests {
     #[test]
     fn rejects_plain_http_webhooks_before_network_access() {
         let error = try_send("http://127.0.0.1:9/hook", "{}").unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
     }
 }
