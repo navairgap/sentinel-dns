@@ -64,12 +64,10 @@ fn try_send(url: &str, body: &str) -> io::Result<()> {
 
     match response {
         Ok(_) => Ok(()),
-        Err(ureq::Error::Status(status, _)) => Err(io::Error::new(
-            io::ErrorKind::Other,
+        Err(ureq::Error::Status(status, _)) => Err(io::Error::other(
             format!("webhook returned HTTP {status}"),
         )),
-        Err(ureq::Error::Transport(error)) => Err(io::Error::new(
-            io::ErrorKind::Other,
+        Err(ureq::Error::Transport(error)) => Err(io::Error::other(
             format!("webhook transport failed: {error}"),
         )),
     }
