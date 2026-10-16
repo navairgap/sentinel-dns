@@ -103,3 +103,7 @@ MIT
 ## Operations
 
 run it under systemd with `Restart=always`; the alert stream goes to journald by default. point `StandardOutput=` at a file if you want logrotate to handle retention. SIGHUP reloads the config without dropping the pipe.
+
+## History
+
+this repo spent weeks as documentation describing a tool that didn't exist — scored sections, alert anatomy, all of it fiction. then one evening it became the fiction: a real rust tool with a CI gate. the docs came first; the code finally caught up.
