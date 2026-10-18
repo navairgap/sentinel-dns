@@ -25,6 +25,8 @@ pub enum ParseError {
     TooShort,
     NotUdp,
     NotDnsPort,
+    MalformedIpHeader,
+    MalformedUdp,
     MalformedName,
 }
 
@@ -34,6 +36,8 @@ impl std::fmt::Display for ParseError {
             ParseError::TooShort => "packet too short",
             ParseError::NotUdp => "not a UDP packet",
             ParseError::NotDnsPort => "neither side is port 53",
+            ParseError::MalformedIpHeader => "malformed IPv4 header",
+            ParseError::MalformedUdp => "malformed UDP datagram",
             ParseError::MalformedName => "malformed dns name",
         };
         f.write_str(s)
@@ -53,21 +57,41 @@ pub fn extract_query(frame: &[u8]) -> Result<Option<Query>, ParseError> {
     }
     let ip = &frame[14..];
     let ihl = ((ip[0] & 0x0f) as usize) * 4;
+    if ihl < 20 || ihl > ip.len() {
+        return Err(ParseError::MalformedIpHeader);
+    }
     if ip.len() < ihl + 8 {
         return Err(ParseError::TooShort);
+    }
+    let total_len = u16::from_be_bytes([ip[2], ip[3]]) as usize;
+    if total_len < ihl + 8 {
+        return Err(ParseError::MalformedIpHeader);
+    }
+    if ip.len() < total_len {
+        return Err(ParseError::TooShort);
+    }
+    // Skip IPv4 fragments: the DNS payload may be incomplete or start in a later fragment.
+    let fragment = u16::from_be_bytes([ip[6], ip[7]]);
+    if fragment & 0x3fff != 0 {
+        return Ok(None);
     }
     if ip[9] != 17 {
         return Err(ParseError::NotUdp);
     }
     let src_ip = [ip[12], ip[13], ip[14], ip[15]];
     let dst_ip = [ip[16], ip[17], ip[18], ip[19]];
-    let udp = &ip[ihl..];
+    let udp = &ip[ihl..total_len];
+    let udp_len = u16::from_be_bytes([udp[4], udp[5]]) as usize;
+    if udp_len < 8 || udp_len > udp.len() {
+        return Err(ParseError::MalformedUdp);
+    }
     let sport = u16::from_be_bytes([udp[0], udp[1]]);
     let dport = u16::from_be_bytes([udp[2], udp[3]]);
+    let dns_payload = &udp[8..udp_len];
     let (client, server, dns) = if dport == 53 {
-        (src_ip, dst_ip, &udp[8..])
+        (src_ip, dst_ip, dns_payload)
     } else if sport == 53 {
-        (dst_ip, src_ip, &udp[8..])
+        (dst_ip, src_ip, dns_payload)
     } else {
         return Err(ParseError::NotDnsPort);
     };
