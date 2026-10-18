@@ -197,3 +197,44 @@ pub fn build_response(query: &[u8], rcode: u8) -> Vec<u8> {
     msg
 }
 
+
+
+#[cfg(test)]
+mod packet_framing_tests {
+    use super::{extract_query, ParseError};
+    use crate::dns::build_query;
+    use crate::pcap::udp_frame;
+
+    fn sample_frame() -> Vec<u8> {
+        udp_frame([192, 168, 1, 20], [1, 1, 1, 1], 53000, 53,
+                  &build_query(1, "example.com", 1))
+    }
+
+    #[test]
+    fn rejects_ipv4_header_lengths_below_minimum() {
+        let mut frame = sample_frame();
+        frame[14] = 0x44; // IHL=16 bytes, invalid for IPv4.
+        assert!(matches!(extract_query(&frame), Err(ParseError::MalformedIpHeader)));
+    }
+
+    #[test]
+    fn skips_fragmented_ipv4_packets() {
+        let mut frame = sample_frame();
+        frame[20] = 0x20; // More Fragments flag.
+        assert_eq!(extract_query(&frame).unwrap(), None);
+    }
+
+    #[test]
+    fn rejects_udp_lengths_shorter_than_header() {
+        let mut frame = sample_frame();
+        frame[38..40].copy_from_slice(&7u16.to_be_bytes());
+        assert!(matches!(extract_query(&frame), Err(ParseError::MalformedUdp)));
+    }
+
+    #[test]
+    fn extracts_well_formed_dns_queries() {
+        let query = extract_query(&sample_frame()).unwrap().unwrap();
+        assert_eq!(query.name, "example.com");
+        assert_eq!(query.client, [192, 168, 1, 20]);
+    }
+}
