@@ -90,7 +90,12 @@ impl<R: Read> PcapReader<R> {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "packet too large"));
         }
         let mut data = vec![0u8; incl_len];
-        self.inner.read_exact(&mut data)?;
+        if let Err(error) = self.inner.read_exact(&mut data) {
+            if error.kind() == io::ErrorKind::UnexpectedEof {
+                return Ok(None); // A capture stopped while the final payload was being written.
+            }
+            return Err(error);
+        }
         Ok(Some(Packet { ts_sec, ts_usec, data }))
     }
 }
