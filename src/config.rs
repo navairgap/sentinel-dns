@@ -64,6 +64,15 @@ impl Config {
                 .map(String::from)
                 .collect();
         }
+        if cfg.window_seconds == 0
+            || cfg.windows_before_alert == 0
+            || !cfg.score_threshold.is_finite()
+            || !(0.0 < cfg.score_threshold && cfg.score_threshold <= 1.0)
+            || cfg.trusted_clients.iter().any(|ip| ip.parse::<std::net::Ipv4Addr>().is_err())
+            || (!cfg.webhook_url.is_empty() && !cfg.webhook_url.starts_with("https://"))
+        {
+            return None;
+        }
         Some(cfg)
     }
 
