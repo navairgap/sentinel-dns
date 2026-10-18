@@ -163,3 +163,41 @@ pub fn udp_frame(src_ip: [u8; 4], dst_ip: [u8; 4], sport: u16, dport: u16, paylo
     f
 }
 
+
+
+#[cfg(test)]
+mod truncated_payload_tests {
+    use super::{PcapReader, build_pcap};
+    use std::io::Cursor;
+
+    #[test]
+    fn incomplete_final_packet_payload_is_clean_eof() {
+        let mut bytes = build_pcap(false, &[]);
+        // Record header: timestamp, captured length=5, original length=5.
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&5u32.to_le_bytes());
+        bytes.extend_from_slice(&5u32.to_le_bytes());
+        bytes.extend_from_slice(&[0xaa, 0xbb]); // capture ended mid-payload
+
+        let mut reader = PcapReader::new(Cursor::new(bytes)).unwrap();
+        assert!(reader.next_packet().unwrap().is_none());
+    }
+
+    #[test]
+    fn complete_packet_before_truncated_tail_is_preserved() {
+        let packet = (10u32, 0u32, vec![1u8, 2, 3]);
+        let mut bytes = build_pcap(false, &[packet]);
+        bytes.extend_from_slice(&11u32.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&5u32.to_le_bytes());
+        bytes.extend_from_slice(&5u32.to_le_bytes());
+        bytes.extend_from_slice(&[0xaa]);
+
+        let mut reader = PcapReader::new(Cursor::new(bytes)).unwrap();
+        let first = reader.next_packet().unwrap().unwrap();
+        assert_eq!(first.ts_sec, 10);
+        assert_eq!(first.data, vec![1, 2, 3]);
+        assert!(reader.next_packet().unwrap().is_none());
+    }
+}
