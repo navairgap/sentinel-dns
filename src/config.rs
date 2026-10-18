@@ -135,3 +135,36 @@ fn parse_value(s: &str) -> Option<(String, &str)> {
     Some((s[..end].trim().to_string(), &s[end..]))
 }
 
+
+
+#[cfg(test)]
+mod validation_tests {
+    use super::Config;
+
+    #[test]
+    fn rejects_invalid_detector_settings() {
+        for text in [
+            r#"{"window_seconds": 0}"#,
+            r#"{"windows_before_alert": 0}"#,
+            r#"{"score_threshold": -0.1}"#,
+            r#"{"score_threshold": 1.1}"#,
+            r#"{"score_threshold": NaN}"#,
+            r#"{"webhook_url": "http://example.invalid/hook"}"#,
+            r#"{"trusted_clients": ["not-an-ip"]}"#,
+        ] {
+            assert!(Config::from_json(text).is_none(), "accepted invalid config: {text}");
+        }
+    }
+
+    #[test]
+    fn accepts_valid_custom_settings() {
+        let cfg = Config::from_json(
+            r#"{"window_seconds": 30, "score_threshold": 0.75, "windows_before_alert": 2, "trusted_clients": ["192.168.1.1"], "webhook_url": "https://example.invalid/hook"}"#,
+        )
+        .expect("valid config should parse");
+        assert_eq!(cfg.window_seconds, 30);
+        assert_eq!(cfg.score_threshold, 0.75);
+        assert_eq!(cfg.windows_before_alert, 2);
+        assert!(cfg.is_trusted([192, 168, 1, 1]));
+    }
+}
