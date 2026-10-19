@@ -128,6 +128,7 @@ fn parse_dns_message(msg: &[u8]) -> Result<(String, u16, bool, u8), ParseError> 
 /// pointer loops terminate instead of hanging the sentinel.
 pub fn read_name(msg: &[u8], offset: usize) -> Result<(String, usize), ParseError> {
     let mut labels: Vec<String> = Vec::new();
+    let mut wire_len = 0usize;
     let mut pos = offset;
     let mut jumped = false;
     let mut steps = 0usize;
@@ -158,6 +159,12 @@ pub fn read_name(msg: &[u8], offset: usize) -> Result<(String, usize), ParseErro
             continue;
         }
         if len & 0xc0 != 0 || pos + 1 + len > msg.len() {
+            return Err(ParseError::MalformedName);
+        }
+        // RFC 1035 limits the expanded wire-format name to 255 octets,
+        // including each label-length byte and the terminating root label.
+        wire_len += 1 + len;
+        if wire_len > 254 {
             return Err(ParseError::MalformedName);
         }
         match std::str::from_utf8(&msg[pos + 1..pos + 1 + len]) {
