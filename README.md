@@ -109,3 +109,8 @@ run it under systemd with `Restart=always`; the alert stream goes to journald by
 ## History
 
 this repo spent weeks as documentation describing a tool that didn't exist — scored sections, alert anatomy, all of it fiction. then one evening it became the fiction: a real rust tool with a CI gate. the docs came first; the code finally caught up.
+
+
+## Detection evaluation
+
+Evaluate changes with small synthetic captures and expected outputs. Track false positives as well as detections, keep regression fixtures offline, and avoid treating a single unusual DNS query as proof of exfiltration.
