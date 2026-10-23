@@ -114,3 +114,8 @@ this repo spent weeks as documentation describing a tool that didn't exist — s
 ## Detection evaluation
 
 Evaluate changes with small synthetic captures and expected outputs. Track false positives as well as detections, keep regression fixtures offline, and avoid treating a single unusual DNS query as proof of exfiltration.
+
+
+## Maintenance and verification notes
+
+Document DNS detector evaluation using synthetic captures, expected output, false-positive tracking, malformed packets, and deterministic offline tests.
