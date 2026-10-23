@@ -42,7 +42,12 @@ impl Alert {
         let mut s = String::new();
         s.push_str("{\"v\":1,\"client\":");
         s.push_str(&json_string(&self.client));
-        let _ = write!(s, ",\"window\":{},\"score\":{:.2},\"reasons\":[", self.window_start, self.score);
+        let score = if self.score.is_finite() {
+            self.score.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let _ = write!(s, ",\"window\":{},\"score\":{:.2},\"reasons\":[", self.window_start, score);
         for (i, reason) in self.reasons.iter().enumerate() {
             if i > 0 { s.push(','); }
             s.push_str(&json_string(reason));
@@ -97,6 +102,22 @@ mod jsonl_tests {
     #[test]
     fn json_string_escapes_quotes_backslashes_and_controls() {
         assert_eq!(json_string("a\"b\\c\n\t"), "\"a\\\"b\\\\c\\n\\t\"");
+    }
+
+    #[test]
+    fn alert_jsonl_keeps_score_finite_and_bounded() {
+        let make_alert = |score| Alert {
+            client: "192.0.2.1".to_string(),
+            window_start: 10,
+            score,
+            reasons: Vec::new(),
+            queries: 1,
+            nxdomains: 0,
+        };
+        assert!(make_alert(f64::NAN).to_jsonl().contains("\\"score\\":0.00"));
+        assert!(make_alert(f64::INFINITY).to_jsonl().contains("\\"score\\":0.00"));
+        assert!(make_alert(2.0).to_jsonl().contains("\\"score\\":1.00"));
+        assert!(make_alert(-1.0).to_jsonl().contains("\\"score\\":0.00"));
     }
 
     #[test]
