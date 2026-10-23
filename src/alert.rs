@@ -114,10 +114,10 @@ mod jsonl_tests {
             queries: 1,
             nxdomains: 0,
         };
-        assert!(make_alert(f64::NAN).to_jsonl().contains("\\"score\\":0.00"));
-        assert!(make_alert(f64::INFINITY).to_jsonl().contains("\\"score\\":0.00"));
-        assert!(make_alert(2.0).to_jsonl().contains("\\"score\\":1.00"));
-        assert!(make_alert(-1.0).to_jsonl().contains("\\"score\\":0.00"));
+        assert!(make_alert(f64::NAN).to_jsonl().contains(r#""score":0.00"#));
+        assert!(make_alert(f64::INFINITY).to_jsonl().contains(r#""score":0.00"#));
+        assert!(make_alert(2.0).to_jsonl().contains(r#""score":1.00"#));
+        assert!(make_alert(-1.0).to_jsonl().contains(r#""score":0.00"#));
     }
 
     #[test]
