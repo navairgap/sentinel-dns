@@ -161,6 +161,12 @@ mod tests {
     }
 
     #[test]
+    fn tracker_never_uses_a_zero_second_window() {
+        assert_eq!(Tracker::new(0).window_seconds, 1);
+        assert_eq!(Tracker::new(15).window_seconds, 15);
+    }
+
+    #[test]
     fn entropy_bounds() {
         assert_eq!(entropy("aaaa"), 0.0);
         let h = entropy("x9q2z7w1");
