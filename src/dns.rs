@@ -208,13 +208,24 @@ pub fn build_response(query: &[u8], rcode: u8) -> Vec<u8> {
 
 #[cfg(test)]
 mod packet_framing_tests {
-    use super::{extract_query, parse_dns_message, ParseError};
+    use super::{extract_query, parse_dns_message, read_name, ParseError};
     use crate::dns::build_query;
     use crate::pcap::udp_frame;
 
     fn sample_frame() -> Vec<u8> {
         udp_frame([192, 168, 1, 20], [1, 1, 1, 1], 53000, 53,
                   &build_query(1, "example.com", 1))
+    }
+
+    #[test]
+    fn rejects_names_over_the_dns_wire_length_limit() {
+        let mut message = Vec::new();
+        for _ in 0..4 {
+            message.push(63);
+            message.extend(std::iter::repeat(b'a').take(63));
+        }
+        message.push(0);
+        assert!(matches!(read_name(&message, 0), Err(ParseError::MalformedName)));
     }
 
     #[test]
