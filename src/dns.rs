@@ -208,7 +208,7 @@ pub fn build_response(query: &[u8], rcode: u8) -> Vec<u8> {
 
 #[cfg(test)]
 mod packet_framing_tests {
-    use super::{extract_query, ParseError};
+    use super::{extract_query, parse_dns_message, ParseError};
     use crate::dns::build_query;
     use crate::pcap::udp_frame;
 
@@ -236,6 +236,12 @@ mod packet_framing_tests {
         let mut frame = sample_frame();
         frame[38..40].copy_from_slice(&7u16.to_be_bytes());
         assert!(matches!(extract_query(&frame), Err(ParseError::MalformedUdp)));
+    }
+
+    #[test]
+    fn rejects_dns_messages_without_questions() {
+        let message = vec![0u8; 12];
+        assert!(matches!(parse_dns_message(&message), Err(ParseError::MalformedName)));
     }
 
     #[test]
