@@ -198,6 +198,13 @@ mod tests {
     }
 
     #[test]
+    fn empty_window_score_is_zero() {
+        let (score, reasons) = window_score(&WindowStats::default());
+        assert_eq!(score, 0.0);
+        assert!(reasons.is_empty());
+    }
+
+    #[test]
     fn clean_client_stays_quiet() {
         let mut t = Tracker::new(60);
         for _ in 0..30 {
