@@ -175,6 +175,13 @@ mod tests {
     }
 
     #[test]
+    fn empty_domain_scores_zero() {
+        let (score, reasons) = domain_score("");
+        assert_eq!(score, 0.0);
+        assert!(reasons.is_empty());
+    }
+
+    #[test]
     fn normal_domain_scores_zero() {
         let (s, reasons) = domain_score("mail.google.com");
         assert_eq!(s, 0.0, "reasons {reasons:?}");
