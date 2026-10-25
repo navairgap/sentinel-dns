@@ -218,6 +218,19 @@ mod tests {
     }
 
     #[test]
+    fn drain_older_than_keeps_the_current_window() {
+        let mut tracker = Tracker::new(60);
+        tracker.observe_at(&q([10, 0, 0, 7], "api.example.com", false), 60);
+        tracker.observe_at(&q([10, 0, 0, 7], "api.example.com", false), 120);
+
+        let drained = tracker.drain_older_than(2);
+        assert_eq!(drained.len(), 1);
+        assert_eq!(drained[0].0, 1);
+        assert!(!tracker.windows.contains_key(&1));
+        assert!(tracker.windows.contains_key(&2));
+    }
+
+    #[test]
     fn clean_client_stays_quiet() {
         let mut t = Tracker::new(60);
         for _ in 0..30 {
