@@ -256,6 +256,20 @@ mod packet_framing_tests {
     }
 
     #[test]
+    fn expands_a_valid_compression_pointer() {
+        let mut message = b"\x03www\x07example\x03com\x00".to_vec();
+        message.extend_from_slice(&[0xc0, 0x00]);
+        let (name, end) = read_name(&message, 17).unwrap();
+        assert_eq!(name, "www.example.com");
+        assert_eq!(end, 19);
+    }
+
+    #[test]
+    fn rejects_a_truncated_compression_pointer() {
+        assert!(matches!(read_name(&[0xc0], 0), Err(ParseError::MalformedName)));
+    }
+
+    #[test]
     fn extracts_well_formed_dns_queries() {
         let query = extract_query(&sample_frame()).unwrap().unwrap();
         assert_eq!(query.name, "example.com");
