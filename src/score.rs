@@ -174,6 +174,13 @@ mod tests {
     }
 
     #[test]
+    fn domain_score_is_capped_at_one() {
+        let core = "bcdfghjklmnpqrstvwxyz0123456789";
+        let (score, _) = domain_score(&format!("{core}.xyz"));
+        assert_eq!(score, 1.0);
+    }
+
+    #[test]
     fn random_dga_scores_high() {
         let (s, reasons) = domain_score("xq7z9w2k1v4b8.example.xyz");
         assert!(s >= 0.5, "score {s} reasons {reasons:?}");
