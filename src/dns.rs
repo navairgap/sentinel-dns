@@ -208,7 +208,7 @@ pub fn build_response(query: &[u8], rcode: u8) -> Vec<u8> {
 
 #[cfg(test)]
 mod packet_framing_tests {
-    use super::{extract_query, parse_dns_message, read_name, ParseError};
+    use super::{build_response, extract_query, parse_dns_message, read_name, ParseError};
     use crate::dns::build_query;
     use crate::pcap::udp_frame;
 
@@ -267,6 +267,15 @@ mod packet_framing_tests {
     #[test]
     fn rejects_a_truncated_compression_pointer() {
         assert!(matches!(read_name(&[0xc0], 0), Err(ParseError::MalformedName)));
+    }
+
+    #[test]
+    fn built_nxdomain_response_sets_response_and_rcode_flags() {
+        let query = build_query(7, "example.com", 1);
+        let response = build_response(&query, 3);
+        let (_, _, is_response, rcode) = parse_dns_message(&response).unwrap();
+        assert!(is_response);
+        assert_eq!(rcode, 3);
     }
 
     #[test]
