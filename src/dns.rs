@@ -208,7 +208,7 @@ pub fn build_response(query: &[u8], rcode: u8) -> Vec<u8> {
 
 #[cfg(test)]
 mod packet_framing_tests {
-    use super::{build_response, extract_query, parse_dns_message, read_name, ParseError};
+    use super::{build_response, extract_query, parse_dns_message, read_name, ParseError, Query};
     use crate::dns::build_query;
     use crate::pcap::udp_frame;
 
@@ -247,6 +247,21 @@ mod packet_framing_tests {
         let mut frame = sample_frame();
         frame[38..40].copy_from_slice(&7u16.to_be_bytes());
         assert!(matches!(extract_query(&frame), Err(ParseError::MalformedUdp)));
+    }
+
+    #[test]
+    fn nxdomain_requires_both_response_and_nxdomain_code() {
+        let make_query = |is_response, rcode| Query {
+            name: "example.com".to_string(),
+            qtype: 1,
+            client: [192, 0, 2, 1],
+            server: [1, 1, 1, 1],
+            is_response,
+            rcode,
+        };
+        assert!(make_query(true, 3).is_nxdomain());
+        assert!(!make_query(false, 3).is_nxdomain());
+        assert!(!make_query(true, 0).is_nxdomain());
     }
 
     #[test]
