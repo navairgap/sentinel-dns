@@ -86,8 +86,15 @@ impl<R: Read> PcapReader<R> {
         let ts_sec = self.read_u32([hdr[0], hdr[1], hdr[2], hdr[3]]);
         let ts_usec = self.read_u32([hdr[4], hdr[5], hdr[6], hdr[7]]);
         let incl_len = self.read_u32([hdr[8], hdr[9], hdr[10], hdr[11]]) as usize;
+        let orig_len = self.read_u32([hdr[12], hdr[13], hdr[14], hdr[15]]) as usize;
         if incl_len > 16 * 1024 * 1024 {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "packet too large"));
+        }
+        if incl_len > orig_len {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "captured packet length exceeds original length",
+            ));
         }
         let mut data = vec![0u8; incl_len];
         if let Err(error) = self.inner.read_exact(&mut data) {
