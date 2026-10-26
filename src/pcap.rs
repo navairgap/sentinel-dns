@@ -204,6 +204,19 @@ mod truncated_payload_tests {
     }
 
     #[test]
+    fn captured_length_cannot_exceed_global_snaplen() {
+        let packet = (10u32, 0u32, vec![1u8, 2, 3]);
+        let mut bytes = build_pcap(false, &[packet]);
+        // The pcap global-header snaplen field occupies bytes 16..20.
+        bytes[16..20].copy_from_slice(&2u32.to_le_bytes());
+
+        let mut reader = PcapReader::new(Cursor::new(bytes)).unwrap();
+        let error = reader.next_packet().unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("snaplen"));
+    }
+
+    #[test]
     fn captured_length_cannot_exceed_original_length() {
         let packet = (10u32, 0u32, vec![1u8, 2, 3]);
         let mut bytes = build_pcap(false, &[packet]);
