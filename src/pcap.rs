@@ -192,6 +192,19 @@ mod truncated_payload_tests {
     }
 
     #[test]
+    fn captured_length_cannot_exceed_original_length() {
+        let packet = (10u32, 0u32, vec![1u8, 2, 3]);
+        let mut bytes = build_pcap(false, &[packet]);
+        // The global header is 24 bytes; orig_len occupies record-header bytes 12..16.
+        bytes[24 + 12..24 + 16].copy_from_slice(&2u32.to_le_bytes());
+
+        let mut reader = PcapReader::new(Cursor::new(bytes)).unwrap();
+        let error = reader.next_packet().unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("original length"));
+    }
+
+    #[test]
     fn complete_packet_before_truncated_tail_is_preserved() {
         let packet = (10u32, 0u32, vec![1u8, 2, 3]);
         let mut bytes = build_pcap(false, &[packet]);
