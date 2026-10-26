@@ -16,6 +16,7 @@ pub struct Packet {
 pub struct PcapReader<R> {
     inner: R,
     swapped: bool,
+    snaplen: usize,
     peeked: Option<u8>,
 }
 
@@ -37,6 +38,11 @@ impl<R: Read> PcapReader<R> {
                 "not a classic pcap (bad magic; pcapng is unsupported)",
             ));
         }
+        let snaplen = if swapped {
+            u32::from_be_bytes([gh[16], gh[17], gh[18], gh[19]])
+        } else {
+            u32::from_le_bytes([gh[16], gh[17], gh[18], gh[19]])
+        } as usize;
         let linktype = if swapped {
             u32::from_be_bytes([gh[20], gh[21], gh[22], gh[23]])
         } else {
@@ -48,7 +54,7 @@ impl<R: Read> PcapReader<R> {
                 format!("unsupported linktype {linktype} (only Ethernet=1)"),
             ));
         }
-        Ok(PcapReader { inner, swapped, peeked: None })
+        Ok(PcapReader { inner, swapped, snaplen, peeked: None })
     }
 
     fn read_u32(&mut self, b: [u8; 4]) -> u32 {
@@ -89,6 +95,12 @@ impl<R: Read> PcapReader<R> {
         let orig_len = self.read_u32([hdr[12], hdr[13], hdr[14], hdr[15]]) as usize;
         if incl_len > 16 * 1024 * 1024 {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "packet too large"));
+        }
+        if incl_len > self.snaplen {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "captured packet length exceeds pcap snaplen",
+            ));
         }
         if incl_len > orig_len {
             return Err(io::Error::new(
