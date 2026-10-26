@@ -190,6 +190,13 @@ mod truncated_payload_tests {
     use std::io::Cursor;
 
     #[test]
+    fn empty_capture_has_no_packets() {
+        let bytes = build_pcap(false, &[]);
+        let mut reader = PcapReader::new(Cursor::new(bytes)).unwrap();
+        assert!(reader.next_packet().unwrap().is_none());
+    }
+
+    #[test]
     fn incomplete_final_packet_payload_is_clean_eof() {
         let mut bytes = build_pcap(false, &[]);
         // Record header: timestamp, captured length=5, original length=5.
