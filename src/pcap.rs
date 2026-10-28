@@ -193,7 +193,10 @@ mod truncated_payload_tests {
     fn rejects_invalid_global_header_magic() {
         let mut bytes = build_pcap(false, &[]);
         bytes[0..4].copy_from_slice(&[0, 0, 0, 0]);
-        let error = PcapReader::new(Cursor::new(bytes)).unwrap_err();
+        let error = match PcapReader::new(Cursor::new(bytes)) {
+            Err(error) => error,
+            Ok(_) => panic!("invalid pcap magic unexpectedly accepted"),
+        };
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
         assert!(error.to_string().contains("bad magic"));
     }
