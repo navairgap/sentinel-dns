@@ -190,6 +190,15 @@ mod truncated_payload_tests {
     use std::io::Cursor;
 
     #[test]
+    fn rejects_invalid_global_header_magic() {
+        let mut bytes = build_pcap(false, &[]);
+        bytes[0..4].copy_from_slice(&[0, 0, 0, 0]);
+        let error = PcapReader::new(Cursor::new(bytes)).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("bad magic"));
+    }
+
+    #[test]
     fn empty_capture_has_no_packets() {
         let bytes = build_pcap(false, &[]);
         let mut reader = PcapReader::new(Cursor::new(bytes)).unwrap();
