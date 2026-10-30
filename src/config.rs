@@ -98,6 +98,9 @@ fn parse_object(text: &str) -> Option<HashMap<String, String>> {
         let after = after.trim_start();
         let after = after.strip_prefix(':')?.trim_start();
         let (value, after) = parse_value(after)?;
+        if map.contains_key(&key) {
+            return None;
+        }
         map.insert(key, value);
         let after = after.trim_start();
         if after.is_empty() {
@@ -154,6 +157,16 @@ mod validation_tests {
         ] {
             assert!(Config::from_json(text).is_none(), "accepted invalid config: {text}");
         }
+    }
+
+    #[test]
+    fn rejects_duplicate_keys_instead_of_silently_overwriting() {
+        assert!(Config::from_json(
+            r#"{"window_seconds": 30, "window_seconds": 120}"#
+        ).is_none());
+        assert!(Config::from_json(
+            r#"{"unknown": 1, "unknown": 2}"#
+        ).is_none());
     }
 
     #[test]
