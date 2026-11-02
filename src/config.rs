@@ -107,6 +107,10 @@ fn parse_object(text: &str) -> Option<HashMap<String, String>> {
             break;
         }
         rest = after.strip_prefix(',')?.trim_start();
+        // A comma must always be followed by another key/value pair.
+        if rest.is_empty() {
+            return None;
+        }
     }
     Some(map)
 }
