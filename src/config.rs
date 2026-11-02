@@ -174,6 +174,12 @@ mod validation_tests {
     }
 
     #[test]
+    fn rejects_trailing_commas_in_config_objects() {
+        assert!(Config::from_json(r#"{ "window_seconds": 30, }"#).is_none());
+        assert!(Config::from_json(r#"{ "window_seconds": 30,   }"#).is_none());
+    }
+
+    #[test]
     fn accepts_valid_custom_settings() {
         let cfg = Config::from_json(
             r#"{"window_seconds": 30, "score_threshold": 0.75, "windows_before_alert": 2, "trusted_clients": ["192.168.1.1"], "webhook_url": "https://example.invalid/hook"}"#,
