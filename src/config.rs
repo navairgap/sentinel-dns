@@ -128,14 +128,22 @@ fn parse_value(s: &str) -> Option<(String, &str)> {
     if s.starts_with('[') {
         let end = s.find(']')?;
         let inner = &s[1..end];
-        let joined = inner
-            .split(',')
-            .filter_map(|part| {
-                let part = part.trim();
-                part.strip_prefix('"')?.strip_suffix('"').map(str::to_string)
-            })
-            .collect::<Vec<_>>()
-            .join(",");
+        let joined = if inner.trim().is_empty() {
+            String::new()
+        } else {
+            let items = inner
+                .split(',')
+                .map(|part| {
+                    let part = part.trim();
+                    let value = part.strip_prefix('"')?.strip_suffix('"')?;
+                    if value.is_empty() || value.contains('"') {
+                        return None;
+                    }
+                    Some(value.to_string())
+                })
+                .collect::<Option<Vec<_>>>()?;
+            items.join(",")
+        };
         return Some((joined, &s[end + 1..]));
     }
     let end = s.find([',', '}']).unwrap_or(s.len());
