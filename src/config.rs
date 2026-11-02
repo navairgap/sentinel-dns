@@ -188,6 +188,18 @@ mod validation_tests {
     }
 
     #[test]
+    fn rejects_non_string_and_trailing_array_members() {
+        for text in [
+            r#"{ "trusted_clients": ["192.168.1.1", 42] }"#,
+            r#"{ "trusted_clients": ["192.168.1.1",] }"#,
+            r#"{ "trusted_clients": [192.168.1.1] }"#,
+            r#"{ "trusted_clients": [""] }"#,
+        ] {
+            assert!(Config::from_json(text).is_none(), "accepted malformed array: {text}");
+        }
+    }
+
+    #[test]
     fn accepts_valid_custom_settings() {
         let cfg = Config::from_json(
             r#"{"window_seconds": 30, "score_threshold": 0.75, "windows_before_alert": 2, "trusted_clients": ["192.168.1.1"], "webhook_url": "https://example.invalid/hook"}"#,
