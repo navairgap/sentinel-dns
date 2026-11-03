@@ -303,3 +303,27 @@ mod packet_framing_tests {
         assert_eq!(query.client, [192, 168, 1, 20]);
     }
 }
+
+
+#[cfg(test)]
+mod ip_version_validation_tests {
+    use super::{extract_query, ParseError};
+    use crate::dns::build_query;
+    use crate::pcap::udp_frame;
+
+    #[test]
+    fn rejects_frames_whose_ip_version_is_not_ipv4() {
+        let mut frame = udp_frame(
+            [192, 0, 2, 10],
+            [192, 0, 2, 53],
+            53000,
+            53,
+            &build_query(1, "example.com", 1),
+        );
+        frame[14] = 0x65; // Version 6 in an Ethernet IPv4 frame.
+        assert!(matches!(
+            extract_query(&frame),
+            Err(ParseError::MalformedIpHeader)
+        ));
+    }
+}
