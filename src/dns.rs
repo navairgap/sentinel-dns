@@ -56,6 +56,9 @@ pub fn extract_query(frame: &[u8]) -> Result<Option<Query>, ParseError> {
         return Ok(None); // not IPv4
     }
     let ip = &frame[14..];
+    if ip[0] >> 4 != 4 {
+        return Err(ParseError::MalformedIpHeader);
+    }
     let ihl = ((ip[0] & 0x0f) as usize) * 4;
     if ihl < 20 || ihl > ip.len() {
         return Err(ParseError::MalformedIpHeader);
