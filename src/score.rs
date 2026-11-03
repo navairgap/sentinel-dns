@@ -86,8 +86,7 @@ pub fn window_score(w: &WindowStats) -> (f64, Vec<String>) {
     }
     // Compare against ceil(queries / 3) without multiplying a potentially
     // attacker-influenced counter, which could overflow u64 in debug builds.
-    let suspicious_threshold =
-        w.queries / 3 + if w.queries % 3 == 0 { 0 } else { 1 };
+    let suspicious_threshold = w.queries.div_ceil(3);
     if w.queries >= 20 && w.suspicious >= suspicious_threshold {
         score += 0.5;
         reasons.push("sustained_dga".to_string());
