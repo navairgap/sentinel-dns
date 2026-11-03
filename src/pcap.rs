@@ -304,7 +304,7 @@ mod global_header_validation_tests {
     fn rejects_unsupported_classic_pcap_versions() {
         let mut bytes = build_pcap(false, &[]);
         bytes[4..6].copy_from_slice(&3u16.to_le_bytes());
-        let error = PcapReader::new(Cursor::new(bytes)).unwrap_err();
+        let error = PcapReader::new(Cursor::new(bytes)).err().expect("invalid header must be rejected");
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
         assert!(error.to_string().contains("expected 2.4"));
     }
@@ -313,7 +313,7 @@ mod global_header_validation_tests {
     fn rejects_zero_snaplen() {
         let mut bytes = build_pcap(false, &[]);
         bytes[16..20].copy_from_slice(&0u32.to_le_bytes());
-        let error = PcapReader::new(Cursor::new(bytes)).unwrap_err();
+        let error = PcapReader::new(Cursor::new(bytes)).err().expect("invalid header must be rejected");
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
         assert!(error.to_string().contains("snaplen"));
     }
