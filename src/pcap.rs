@@ -318,3 +318,19 @@ mod global_header_validation_tests {
         assert!(error.to_string().contains("snaplen"));
     }
 }
+
+
+#[cfg(test)]
+mod packet_timestamp_validation_tests {
+    use super::{build_pcap, PcapReader};
+    use std::io::Cursor;
+
+    #[test]
+    fn rejects_microsecond_timestamps_outside_the_valid_range() {
+        let bytes = build_pcap(false, &[(10, 1_000_000, vec![0xaa])]);
+        let mut reader = PcapReader::new(Cursor::new(bytes)).unwrap();
+        let error = reader.next_packet().unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("microseconds"));
+    }
+}
