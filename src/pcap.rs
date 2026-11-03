@@ -113,6 +113,12 @@ impl<R: Read> PcapReader<R> {
         }
         let ts_sec = self.read_u32([hdr[0], hdr[1], hdr[2], hdr[3]]);
         let ts_usec = self.read_u32([hdr[4], hdr[5], hdr[6], hdr[7]]);
+        if ts_usec >= 1_000_000 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "pcap packet timestamp microseconds must be below one million",
+            ));
+        }
         let incl_len = self.read_u32([hdr[8], hdr[9], hdr[10], hdr[11]]) as usize;
         let orig_len = self.read_u32([hdr[12], hdr[13], hdr[14], hdr[15]]) as usize;
         if incl_len > 16 * 1024 * 1024 {
