@@ -84,7 +84,11 @@ pub fn window_score(w: &WindowStats) -> (f64, Vec<String>) {
     if w.queries == 0 {
         return (0.0, reasons);
     }
-    if w.queries >= 20 && w.suspicious * 3 >= w.queries {
+    // Compare against ceil(queries / 3) without multiplying a potentially
+    // attacker-influenced counter, which could overflow u64 in debug builds.
+    let suspicious_threshold =
+        w.queries / 3 + if w.queries % 3 == 0 { 0 } else { 1 };
+    if w.queries >= 20 && w.suspicious >= suspicious_threshold {
         score += 0.5;
         reasons.push("sustained_dga".to_string());
     }
@@ -215,6 +219,19 @@ mod tests {
         assert!(s >= 0.5, "score {s} reasons {reasons:?}");
         assert!(reasons.contains(&"sustained_dga".to_string()));
         assert!(reasons.contains(&"nxdomain_burst".to_string()));
+    }
+
+
+    #[test]
+    fn sustained_dga_threshold_does_not_overflow_large_counters() {
+        let stats = WindowStats {
+            queries: u64::MAX,
+            suspicious: u64::MAX / 3 + 1,
+            ..WindowStats::default()
+        };
+        let (score, reasons) = window_score(&stats);
+        assert!(score >= 0.5);
+        assert!(reasons.contains(&"sustained_dga".to_string()));
     }
 
     #[test]
