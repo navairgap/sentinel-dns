@@ -38,11 +38,33 @@ impl<R: Read> PcapReader<R> {
                 "not a classic pcap (bad magic; pcapng is unsupported)",
             ));
         }
+        let major = if swapped {
+            u16::from_be_bytes([gh[4], gh[5]])
+        } else {
+            u16::from_le_bytes([gh[4], gh[5]])
+        };
+        let minor = if swapped {
+            u16::from_be_bytes([gh[6], gh[7]])
+        } else {
+            u16::from_le_bytes([gh[6], gh[7]])
+        };
+        if (major, minor) != (2, 4) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("unsupported pcap version {major}.{minor} (expected 2.4)"),
+            ));
+        }
         let snaplen = if swapped {
             u32::from_be_bytes([gh[16], gh[17], gh[18], gh[19]])
         } else {
             u32::from_le_bytes([gh[16], gh[17], gh[18], gh[19]])
         } as usize;
+        if snaplen == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "pcap snaplen must be greater than zero",
+            ));
+        }
         let linktype = if swapped {
             u32::from_be_bytes([gh[20], gh[21], gh[22], gh[23]])
         } else {
