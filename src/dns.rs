@@ -153,8 +153,8 @@ pub fn read_name(msg: &[u8], offset: usize) -> Result<(String, usize), ParseErro
                 return Err(ParseError::MalformedName);
             }
             let ptr = ((len & 0x3f) << 8) | msg[pos + 1] as usize;
-            if jumped {
-                return Err(ParseError::MalformedName); // second jump: refuse
+            if jumped || ptr >= pos {
+                return Err(ParseError::MalformedName); // reject repeated and forward pointers
             }
             jumped = true;
             end_after_name = pos + 2;
