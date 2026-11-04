@@ -283,6 +283,12 @@ mod packet_framing_tests {
     }
 
     #[test]
+    fn rejects_a_forward_compression_pointer() {
+        let message = [0xc0, 0x02, 0x00];
+        assert!(matches!(read_name(&message, 0), Err(ParseError::MalformedName)));
+    }
+
+    #[test]
     fn rejects_a_truncated_compression_pointer() {
         assert!(matches!(read_name(&[0xc0], 0), Err(ParseError::MalformedName)));
     }
