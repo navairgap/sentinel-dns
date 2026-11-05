@@ -125,14 +125,18 @@ impl Tracker {
     pub fn observe_at(&mut self, q: &Query, ts: u64) {
         let key = ts / self.window_seconds;
         let client = self.windows.entry(key).or_default().entry(q.client).or_default();
-        client.queries += 1;
+        client.queries = client.queries.saturating_add(1);
         if q.is_nxdomain() {
-            client.nxdomains += 1;
+            client.nxdomains = client.nxdomains.saturating_add(1);
         }
         let (s, reasons) = domain_score(&q.name);
         if s >= 0.5 {
-            client.suspicious += 1;
-            client.reasons.extend(reasons);
+            client.suspicious = client.suspicious.saturating_add(1);
+            for reason in reasons {
+                if !client.reasons.contains(&reason) {
+                    client.reasons.push(reason);
+                }
+            }
         }
     }
 
@@ -231,6 +235,36 @@ mod tests {
         let (score, reasons) = window_score(&stats);
         assert!(score >= 0.5);
         assert!(reasons.contains(&"sustained_dga".to_string()));
+    }
+
+    #[test]
+    fn tracker_saturates_counters_and_deduplicates_reasons() {
+        let client = [10, 0, 0, 9];
+        let timestamp = 1_700_000_000;
+        let key = timestamp / 60;
+        let mut tracker = Tracker::new(60);
+        let stats = tracker.windows.entry(key).or_default().entry(client).or_default();
+        stats.queries = u64::MAX;
+        stats.nxdomains = u64::MAX;
+        stats.suspicious = u64::MAX;
+        stats.reasons.push("high_entropy".to_string());
+
+        for _ in 0..5 {
+            tracker.observe_at(
+                &q(client, "xq7z9w2k1v4b8.example.xyz", true),
+                timestamp,
+            );
+        }
+
+        let stats = &tracker.windows[&key][&client];
+        assert_eq!(stats.queries, u64::MAX);
+        assert_eq!(stats.nxdomains, u64::MAX);
+        assert_eq!(stats.suspicious, u64::MAX);
+        assert!(stats.reasons.len() <= 5);
+        let mut unique = stats.reasons.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(stats.reasons.len(), unique.len());
     }
 
     #[test]
