@@ -116,9 +116,72 @@ fn parse_object(text: &str) -> Option<HashMap<String, String>> {
 }
 
 fn parse_string(s: &str) -> Option<(String, &str)> {
-    let s = s.strip_prefix('"')?;
-    let end = s.find('"')?;
-    Some((s[..end].to_string(), &s[end + 1..]))
+    let bytes = s.as_bytes();
+    if bytes.first() != Some(&b'"') {
+        return None;
+    }
+
+    let mut out = String::new();
+    let mut index = 1;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'"' => return Some((out, &s[index + 1..])),
+            b'\\' => {
+                let escaped = *bytes.get(index + 1)?;
+                let (decoded, consumed) = match escaped {
+                    b'"' => ('"', 2),
+                    b'\\' => ('\\', 2),
+                    b'/' => ('/', 2),
+                    b'b' => ('\u{0008}', 2),
+                    b'f' => ('\u{000c}', 2),
+                    b'n' => ('\n', 2),
+                    b'r' => ('\r', 2),
+                    b't' => ('\t', 2),
+                    b'u' => {
+                        let first = parse_hex4(bytes, index + 2)?;
+                        if (0xd800..=0xdbff).contains(&first) {
+                            if bytes.get(index + 6..index + 8)? != b"\\u" {
+                                return None;
+                            }
+                            let second = parse_hex4(bytes, index + 8)?;
+                            if !(0xdc00..=0xdfff).contains(&second) {
+                                return None;
+                            }
+                            let scalar = 0x10000
+                                + (((u32::from(first) - 0xd800) << 10)
+                                    | (u32::from(second) - 0xdc00));
+                            (char::from_u32(scalar)?, 12)
+                        } else {
+                            if (0xdc00..=0xdfff).contains(&first) {
+                                return None;
+                            }
+                            (char::from_u32(u32::from(first))?, 6)
+                        }
+                    }
+                    _ => return None,
+                };
+                out.push(decoded);
+                index += consumed;
+            }
+            byte if byte < 0x20 => return None,
+            _ => {
+                let character = s[index..].chars().next()?;
+                out.push(character);
+                index += character.len_utf8();
+            }
+        }
+    }
+    None
+}
+
+fn parse_hex4(bytes: &[u8], start: usize) -> Option<u16> {
+    let digits = bytes.get(start..start.checked_add(4)?)?;
+    let mut value = 0u16;
+    for digit in digits {
+        let nibble = (*digit as char).to_digit(16)? as u16;
+        value = value.checked_mul(16)?.checked_add(nibble)?;
+    }
+    Some(value)
 }
 
 fn parse_value(s: &str) -> Option<(String, &str)> {
@@ -126,25 +189,28 @@ fn parse_value(s: &str) -> Option<(String, &str)> {
         return parse_string(s);
     }
     if s.starts_with('[') {
-        let end = s.find(']')?;
-        let inner = &s[1..end];
-        let joined = if inner.trim().is_empty() {
-            String::new()
-        } else {
-            let items = inner
-                .split(',')
-                .map(|part| {
-                    let part = part.trim();
-                    let value = part.strip_prefix('"')?.strip_suffix('"')?;
-                    if value.is_empty() || value.contains('"') {
-                        return None;
-                    }
-                    Some(value.to_string())
-                })
-                .collect::<Option<Vec<_>>>()?;
-            items.join(",")
-        };
-        return Some((joined, &s[end + 1..]));
+        let mut rest = s.strip_prefix('[')?.trim_start();
+        let mut items = Vec::new();
+        if let Some(after) = rest.strip_prefix(']') {
+            return Some((String::new(), after));
+        }
+        loop {
+            let (item, after) = parse_string(rest)?;
+            // This compact config schema stores trusted client IPs as a comma-
+            // joined value, so commas inside an array member are not supported.
+            if item.is_empty() || item.contains(',') {
+                return None;
+            }
+            items.push(item);
+            rest = after.trim_start();
+            if let Some(after_array) = rest.strip_prefix(']') {
+                return Some((items.join(","), after_array));
+            }
+            rest = rest.strip_prefix(',')?.trim_start();
+            if rest.starts_with(']') {
+                return None;
+            }
+        }
     }
     let end = s.find([',', '}']).unwrap_or(s.len());
     Some((s[..end].trim().to_string(), &s[end..]))
@@ -210,4 +276,46 @@ mod validation_tests {
         assert_eq!(cfg.windows_before_alert, 2);
         assert!(cfg.is_trusted([192, 168, 1, 1]));
     }
+
+    #[test]
+    fn decodes_json_string_escapes_and_unicode() {
+        let (decoded, rest) = super::parse_string(
+            r#""path\/with\\slash and \"quotes\" \u2764 \uD83D\uDE80""#
+        ).unwrap();
+        assert_eq!(decoded, "path/with\\slash and \"quotes\" ❤ 🚀");
+        assert_eq!(rest, "");
+    }
+
+    #[test]
+    fn rejects_invalid_escapes_and_unescaped_control_characters() {
+        for value in [
+            "\"bad\\xescape\"",
+            "\"unfinished\\",
+            "\"raw\nnewline\"",
+            "\"lone high surrogate \\uD800\"",
+            "\"lone low surrogate \\uDC00\"",
+            "\"invalid pair \\uD800\\u0041\"",
+        ] {
+            assert!(super::parse_string(value).is_none(), "accepted {value:?}");
+        }
+    }
+
+    #[test]
+    fn parses_escaped_webhook_string_from_config() {
+        let cfg = Config::from_json(
+            r#"{ "webhook_url": "https:\/\/example.invalid\/hook" }"#
+        ).expect("escaped slashes are valid JSON strings");
+        assert_eq!(cfg.webhook_url, "https://example.invalid/hook");
+    }
+
+    #[test]
+    fn trusted_client_array_parser_rejects_trailing_members() {
+        for value in [
+            r#"{ "trusted_clients": ["192.0.2.1",] }"#,
+            r#"{ "trusted_clients": ["192.0.2.1", 42] }"#,
+        ] {
+            assert!(Config::from_json(value).is_none());
+        }
+    }
+
 }
