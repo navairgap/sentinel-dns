@@ -333,6 +333,15 @@ struct AlertState {
     last_closed: HashMap<[u8; 4], u64>,
 }
 
+/// The result of scoring one closed window: either the window had already
+/// been scored (a late packet re-created it), or it produced a score and
+/// possibly an alert.
+#[derive(Debug)]
+enum WindowOutcome {
+    AlreadyScored,
+    Scored { score: f64, alert: Option<Alert> },
+}
+
 impl AlertState {
     /// Score one closed window. Windows must arrive in ascending order
     /// (`Tracker::drain_older_than` guarantees this). Fires an alert exactly
@@ -345,13 +354,13 @@ impl AlertState {
         window: u64,
         client: [u8; 4],
         stats: &WindowStats,
-    ) -> Option<Alert> {
+    ) -> WindowOutcome {
         if self
             .last_closed
             .get(&client)
             .is_some_and(|&seen| seen >= window)
         {
-            return None; // already scored; this is a duplicate close
+            return WindowOutcome::AlreadyScored; // duplicate close (late packets)
         }
         self.last_closed.insert(client, window);
 
@@ -360,21 +369,24 @@ impl AlertState {
             let streak = self.consecutive.entry(client).or_insert(0);
             *streak += 1;
             if *streak >= config.windows_before_alert && self.alerted.insert(client) {
-                return Some(Alert {
-                    client: std::net::Ipv4Addr::from(client).to_string(),
-                    window_start: window * config.window_seconds,
+                return WindowOutcome::Scored {
                     score,
-                    reasons,
-                    queries: stats.queries,
-                    nxdomains: stats.nxdomains,
-                    suspicious: stats.suspicious,
-                });
+                    alert: Some(Alert {
+                        client: std::net::Ipv4Addr::from(client).to_string(),
+                        window_start: window * config.window_seconds,
+                        score,
+                        reasons,
+                        queries: stats.queries,
+                        nxdomains: stats.nxdomains,
+                        suspicious: stats.suspicious,
+                    }),
+                };
             }
         } else {
             self.consecutive.remove(&client);
             self.alerted.remove(&client);
         }
-        None
+        WindowOutcome::Scored { score, alert: None }
     }
 }
 
@@ -456,6 +468,7 @@ fn run_pipeline<R: Read, W: Write>(
                     &mut alerts,
                     out,
                     &mut stats.alerts,
+                    verbose,
                 )?;
                 out.flush().ok();
                 continue;
@@ -477,6 +490,7 @@ fn run_pipeline<R: Read, W: Write>(
             &mut alerts,
             out,
             &mut stats.alerts,
+            verbose,
         )?;
 
         match dns::extract_query(&packet.data) {
@@ -515,13 +529,16 @@ fn run_pipeline<R: Read, W: Write>(
         &mut alerts,
         out,
         &mut stats.alerts,
+        verbose,
     )?;
     Ok(Some(stats))
 }
 
 /// Score and emit alerts for every window strictly older than `before`.
-/// An alert-stream write error (broken pipe, closed file) aborts: no
-/// consumer means no point in continuing to run.
+/// With `verbose`, every closed window is logged to stderr so tuning runs
+/// can be followed without reading the alert stream. An alert-stream write
+/// error (broken pipe, closed file) aborts: no consumer means no point in
+/// continuing to run.
 fn close_windows(
     tracker: &mut Tracker,
     before: u64,
@@ -529,9 +546,35 @@ fn close_windows(
     alerts: &mut AlertState,
     out: &mut impl Write,
     fired: &mut u64,
+    verbose: bool,
 ) -> io::Result<()> {
     for (window, client, stats) in tracker.drain_older_than(before) {
-        if let Some(alert) = alerts.close_window(config, window, client, &stats) {
+        let outcome = alerts.close_window(config, window, client, &stats);
+        if verbose {
+            match &outcome {
+                WindowOutcome::AlreadyScored => eprintln!(
+                    "window {} closed: {} skipped (already scored)",
+                    window,
+                    std::net::Ipv4Addr::from(client)
+                ),
+                WindowOutcome::Scored { score, alert } => {
+                    let fired_note = if alert.is_some() { " ALERT" } else { "" };
+                    eprintln!(
+                        "window {} closed: {} score={:.2} queries={} nx={}{}",
+                        window,
+                        std::net::Ipv4Addr::from(client),
+                        score,
+                        stats.queries,
+                        stats.nxdomains,
+                        fired_note
+                    );
+                }
+            }
+        }
+        if let WindowOutcome::Scored {
+            alert: Some(alert), ..
+        } = outcome
+        {
             let line = alert.to_jsonl();
             writeln!(out, "{line}")?;
             *fired += 1;
@@ -633,7 +676,7 @@ fn selftest() -> ExitCode {
 
 #[cfg(test)]
 mod alert_state_tests {
-    use super::{close_windows, AlertState};
+    use super::{close_windows, AlertState, WindowOutcome};
     use crate::config::Config;
     use crate::score::{Tracker, WindowStats};
     use std::io::{self, Write};
@@ -692,6 +735,7 @@ mod alert_state_tests {
             &mut alerts,
             &mut sink,
             &mut fired,
+            false,
         )
         .err()
         .expect("broken alert stream must surface");
@@ -710,7 +754,9 @@ mod alert_state_tests {
 
         let mut fired = Vec::new();
         for window in 0..6u64 {
-            if let Some(a) = alerts.close_window(&config, window, client, &bad_stats()) {
+            if let WindowOutcome::Scored { alert: Some(a), .. } =
+                alerts.close_window(&config, window, client, &bad_stats())
+            {
                 fired.push(a);
             }
         }
@@ -718,9 +764,14 @@ mod alert_state_tests {
 
         // A clean window re-arms the client.
         let clean = WindowStats::default();
-        assert!(alerts.close_window(&config, 6, client, &clean).is_none());
+        assert!(matches!(
+            alerts.close_window(&config, 6, client, &clean),
+            WindowOutcome::Scored { alert: None, .. }
+        ));
         for window in 7..10u64 {
-            if let Some(a) = alerts.close_window(&config, window, client, &bad_stats()) {
+            if let WindowOutcome::Scored { alert: Some(a), .. } =
+                alerts.close_window(&config, window, client, &bad_stats())
+            {
                 fired.push(a);
             }
         }
@@ -739,15 +790,18 @@ mod alert_state_tests {
         };
         let client = [10, 0, 0, 9];
         let mut alerts = AlertState::default();
-        assert!(alerts
-            .close_window(&config, 0, client, &bad_stats())
-            .is_none());
-        assert!(alerts
-            .close_window(&config, 1, client, &bad_stats())
-            .is_none());
-        assert!(alerts
-            .close_window(&config, 2, client, &bad_stats())
-            .is_some());
+        assert!(matches!(
+            alerts.close_window(&config, 0, client, &bad_stats()),
+            WindowOutcome::Scored { alert: None, .. }
+        ));
+        assert!(matches!(
+            alerts.close_window(&config, 1, client, &bad_stats()),
+            WindowOutcome::Scored { alert: None, .. }
+        ));
+        assert!(matches!(
+            alerts.close_window(&config, 2, client, &bad_stats()),
+            WindowOutcome::Scored { alert: Some(_), .. }
+        ));
     }
 
     #[test]
@@ -758,9 +812,12 @@ mod alert_state_tests {
             ..Config::default()
         };
         let mut alerts = AlertState::default();
-        let alert = alerts
-            .close_window(&config, 7, [192, 0, 2, 5], &bad_stats())
-            .expect("fires on the first bad window");
+        let alert = match alerts.close_window(&config, 7, [192, 0, 2, 5], &bad_stats()) {
+            WindowOutcome::Scored {
+                alert: Some(alert), ..
+            } => alert,
+            outcome => panic!("expected an alert, got {outcome:?}"),
+        };
         assert_eq!(alert.window_start, 210);
         assert_eq!(alert.client, "192.0.2.5");
     }
@@ -775,23 +832,30 @@ mod alert_state_tests {
         };
         let client = [10, 0, 0, 9];
         let mut alerts = AlertState::default();
-        assert!(alerts
-            .close_window(&config, 4, client, &bad_stats())
-            .is_some());
-        assert!(alerts
-            .close_window(&config, 4, client, &bad_stats())
-            .is_none());
-        assert!(alerts
-            .close_window(&config, 3, client, &bad_stats())
-            .is_none());
+        assert!(matches!(
+            alerts.close_window(&config, 4, client, &bad_stats()),
+            WindowOutcome::Scored { alert: Some(_), .. }
+        ));
+        assert!(matches!(
+            alerts.close_window(&config, 4, client, &bad_stats()),
+            WindowOutcome::AlreadyScored
+        ));
+        assert!(matches!(
+            alerts.close_window(&config, 3, client, &bad_stats()),
+            WindowOutcome::AlreadyScored
+        ));
 
         // A strictly newer window still scores: a clean window re-arms the
         // client, and the next bad window fires again.
         let clean = WindowStats::default();
-        assert!(alerts.close_window(&config, 5, client, &clean).is_none());
-        assert!(alerts
-            .close_window(&config, 6, client, &bad_stats())
-            .is_some());
+        assert!(matches!(
+            alerts.close_window(&config, 5, client, &clean),
+            WindowOutcome::Scored { alert: None, .. }
+        ));
+        assert!(matches!(
+            alerts.close_window(&config, 6, client, &bad_stats()),
+            WindowOutcome::Scored { alert: Some(_), .. }
+        ));
     }
 }
 
