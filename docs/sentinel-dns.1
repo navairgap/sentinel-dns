@@ -1,0 +1,124 @@
+.\" Manual page for sentinel-dns.
+.TH SENTINEL-DNS 1 "2026" "sentinel-dns 0.2.0" "User Commands"
+.SH NAME
+sentinel-dns \- passive DNS exfiltration and DGA detection at the resolver
+.SH SYNOPSIS
+.B sentinel-dns
+.B analyze
+.I file.pcap ...
+.RI [ options ]
+.br
+.B sentinel-dns
+.B watch
+.RI [ options ]
+.br
+.B sentinel-dns
+.B selftest
+.br
+.B sentinel-dns
+.B config
+.SH DESCRIPTION
+.B sentinel-dns
+reads pcap data \(em an offline capture or a live
+.BR tcpdump (1)
+pipe \(em extracts DNS questions, and scores each client's behavior inside
+rolling time windows. Alerts are one JSON object per line on stdout. A
+single unusual domain is never enough: an alert requires a window score at
+or above
+.I score_threshold
+for
+.I windows_before_alert
+consecutive windows, and each streak fires exactly once.
+.SH COMMANDS
+.TP
+.BI analyze " file.pcap ..."
+Score one or more offline captures. Files are opened before analysis
+starts; window keys and alert streaks continue across files, so rotated
+captures analyze as one timeline.
+.TP
+.B watch
+Read a pcap stream from stdin. Finished windows close on wall-clock time
+while the pipe is quiet, so alerts and SIGHUP handling do not wait for new
+packets.
+.TP
+.B selftest
+Synthesize a capture with one clean client and one DGA offender, run the
+full pipeline, and verify exactly one alert fires for the offender. Exits
+non-zero on failure.
+.TP
+.B config
+Print the default configuration as JSON.
+.SH OPTIONS
+.TP
+.BI \-c ", " \-\-config " " \fIpath\fR
+Load the configuration from \fIpath\fR. The attached form
+.B \-\-config=path
+also works. Default: built-in defaults.
+.TP
+.BR \-v ", " \-\-verbose
+Log skipped packets and closed windows (with scores) to stderr.
+.TP
+.BR \-V ", " \-\-version
+Print the version.
+.TP
+.BR \-h ", " \-\-help
+Print usage.
+.SH CONFIGURATION
+A flat JSON object; unknown keys are ignored.
+.TP
+.I window_seconds
+Scoring window length in seconds, at least 1. Default 60.
+.TP
+.I score_threshold
+Window score that counts as bad, in (0, 1]. Default 0.6.
+.TP
+.I windows_before_alert
+Consecutive bad windows before an alert fires. Default 3.
+.TP
+.I trusted_clients
+Array of IPv4 addresses or CIDR subnets that are never scored. Default [].
+.TP
+.I webhook_url
+HTTPS endpoint receiving each alert as a JSON POST; TLS certificates are
+verified, redirects are disabled, and delivery runs on a background thread
+with a 5 s timeout. Empty disables. Default "".
+.SH SIGNALS
+.TP
+.B SIGHUP
+Reload the configuration without dropping the capture. A changed
+.I window_seconds
+resets in-flight windows and streaks.
+.TP
+.B SIGINT SIGTERM
+Stop reading and score everything already captured before exiting.
+.SH EXIT STATUS
+.TP
+.B 0
+Success, including a drained shutdown and a closed stdout pipe.
+.TP
+.B 1
+Failure: unreadable input, invalid configuration, a stream that is not a
+pcap, or an I/O error.
+.TP
+.B 2
+Usage error.
+.SH ALERTS
+One JSON object per line:
+.PP
+{"v":1,"client":"10.0.0.42","window":1700000040,"score":0.90,"reasons":["sustained_dga","nxdomain_burst"],"queries":45,"nxdomains":41,"suspicious":30}
+.PP
+.B queries
+counts questions the client asked;
+.B nxdomains
+counts NXDOMAIN responses received;
+.B suspicious
+counts questions whose names scored as high-suspicion.
+.SH LIMITATIONS
+Ethernet IPv4 UDP/53 only. IPv6, pcapng, VLAN tags, DNS over TLS/HTTPS,
+and all but the first question per message are not parsed. Packets are
+processed in capture order. Webhook delivery is best-effort; consume
+stdout JSONL if you need guaranteed delivery.
+.SH SEE ALSO
+.BR tcpdump (1)
+.SH LICENSE
+MIT
