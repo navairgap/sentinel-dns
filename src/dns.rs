@@ -357,3 +357,124 @@ mod ip_version_validation_tests {
         ));
     }
 }
+
+#[cfg(test)]
+mod name_decompression_tests {
+    use super::{read_name, ParseError};
+
+    #[test]
+    fn rejects_reserved_label_types() {
+        // 0x40 and 0x80 label prefixes (EDNS0 bitlabels and friends) are
+        // not valid in classic DNS names.
+        for first_byte in [0x40u8, 0x80u8, 0x41, 0xc1] {
+            let message = [first_byte, 0x01, b'a', 0x00];
+            assert!(
+                matches!(read_name(&message, 0), Err(ParseError::MalformedName)),
+                "accepted label byte {first_byte:#04x}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_pointer_may_land_on_an_earlier_name_but_not_sideways() {
+        // Pointer to a complete earlier name is legal RFC 1035 usage.
+        let mut message = b"\x03com\x00".to_vec();
+        let target = 0;
+        message.extend_from_slice(&[0x04, b'w', b'w', b'w', b'w']);
+        message.extend_from_slice(&[0xc0, target as u8]);
+        let (name, end) = read_name(&message, 5).unwrap();
+        assert_eq!(name, "wwww.com");
+        assert_eq!(end, 12);
+    }
+
+    #[test]
+    fn pointers_may_not_point_at_other_pointers() {
+        let message = [0xc0, 0x02, 0xc0, 0x00, 0x00];
+        assert!(matches!(
+            read_name(&message, 0),
+            Err(ParseError::MalformedName)
+        ));
+    }
+
+    #[test]
+    fn a_label_may_not_run_past_the_message() {
+        let message = [0x05, b'a', b'b'];
+        assert!(matches!(
+            read_name(&message, 0),
+            Err(ParseError::MalformedName)
+        ));
+    }
+
+    #[test]
+    fn an_offset_past_the_message_is_an_error() {
+        let message = [0x03, b'a', b'b', b'c', 0x00];
+        assert!(matches!(
+            read_name(&message, 99),
+            Err(ParseError::MalformedName)
+        ));
+    }
+
+    #[test]
+    fn empty_name_is_the_root_label() {
+        let (name, end) = read_name(&[0x00], 0).unwrap();
+        assert_eq!(name, "");
+        assert_eq!(end, 1);
+    }
+
+    #[test]
+    fn names_are_case_preserved() {
+        let (name, _) = read_name(b"\x07ExAmPlE\x03COM\x00", 0).unwrap();
+        assert_eq!(name, "ExAmPlE.COM");
+    }
+}
+
+#[cfg(test)]
+mod question_section_tests {
+    use super::{parse_dns_message, ParseError};
+
+    fn header(qdcount: u16) -> Vec<u8> {
+        let mut msg = vec![0u8; 12];
+        msg[4..6].copy_from_slice(&qdcount.to_be_bytes());
+        msg
+    }
+
+    #[test]
+    fn a_truncated_question_type_is_rejected() {
+        // Name present, but the 4-byte question tail is cut short.
+        let mut msg = header(1);
+        msg.extend_from_slice(b"\x01a\x00"); // name only
+        msg.extend_from_slice(&[0x00, 0x01]); // qtype, qclass missing
+        assert!(matches!(parse_dns_message(&msg), Err(ParseError::TooShort)));
+    }
+
+    #[test]
+    fn a_full_question_parses_with_its_type() {
+        let mut msg = header(1);
+        msg.extend_from_slice(b"\x01a\x00");
+        msg.extend_from_slice(&[0x00, 0x0c, 0x00, 0x01]); // qtype PTR, qclass IN
+        let (name, qtype, is_response, rcode) = parse_dns_message(&msg).unwrap();
+        assert_eq!(name, "a");
+        assert_eq!(qtype, 12);
+        assert!(!is_response);
+        assert_eq!(rcode, 0);
+    }
+
+    #[test]
+    fn rcode_and_response_flag_come_from_the_header() {
+        let mut msg = header(1);
+        msg.extend_from_slice(b"\x01a\x00\x00\x01\x00\x01");
+        msg[2] = 0x80; // QR only
+        msg[3] = 0x02; // SERVFAIL
+        let (_, _, is_response, rcode) = parse_dns_message(&msg).unwrap();
+        assert!(is_response);
+        assert_eq!(rcode, 2);
+    }
+
+    #[test]
+    fn a_message_shorter_than_the_header_is_rejected() {
+        assert!(matches!(
+            parse_dns_message(&[0u8; 11]),
+            Err(ParseError::TooShort)
+        ));
+    }
+}
