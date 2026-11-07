@@ -25,9 +25,16 @@ use config::Config;
 use score::{window_score, Tracker, WindowStats};
 
 static RELOAD: AtomicBool = AtomicBool::new(false);
+static SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
 extern "C" fn on_hup(_sig: i32) {
     RELOAD.store(true, Ordering::SeqCst);
+}
+
+/// SIGINT/SIGTERM: stop reading and score everything already captured.
+/// Signals are handled at loop safe points, not mid-write.
+extern "C" fn on_terminate(_sig: i32) {
+    SHUTDOWN.store(true, Ordering::SeqCst);
 }
 
 /// How often a quiet live pipe wakes the loop, in milliseconds. This bounds
@@ -149,10 +156,13 @@ fn main() -> ExitCode {
     };
 
     // SIGHUP asks the pipeline loop to reload the config at the next safe
-    // point. SAFETY: the handler only sets an atomic flag; it allocates
-    // nothing and is async-signal-safe.
+    // point; SIGINT/SIGTERM ask it to drain and stop. SAFETY: the handlers
+    // only set atomic flags; they allocate nothing and are
+    // async-signal-safe.
     unsafe {
         libc::signal(libc::SIGHUP, on_hup as *const () as usize);
+        libc::signal(libc::SIGINT, on_terminate as *const () as usize);
+        libc::signal(libc::SIGTERM, on_terminate as *const () as usize);
     }
 
     let config = match &invocation.config_path {
@@ -184,26 +194,15 @@ fn main() -> ExitCode {
             Ok(f) => {
                 let stdout = io::stdout();
                 let mut out = BufWriter::new(stdout.lock());
-                match run_pipeline(
+                let stats = run_pipeline(
                     BufReader::new(f),
                     &config,
                     invocation.config_path.as_deref(),
                     invocation.verbose,
                     false,
                     &mut out,
-                ) {
-                    Some(stats) => {
-                        out.flush().ok();
-                        if stats.packets > 0 {
-                            eprintln!(
-                                "sentinel-dns: {} packets, {} dns messages, {} alerts",
-                                stats.packets, stats.dns_messages, stats.alerts
-                            );
-                        }
-                        ExitCode::SUCCESS
-                    }
-                    None => ExitCode::FAILURE,
-                }
+                );
+                finish(stats, &mut out, true)
             }
             Err(e) => {
                 eprintln!("sentinel-dns: {}: {e}", file.display());
@@ -214,7 +213,7 @@ fn main() -> ExitCode {
             let stdin = io::stdin();
             let stdout = io::stdout();
             let mut out = BufWriter::new(stdout.lock());
-            let ran = run_pipeline(
+            let stats = run_pipeline(
                 TimeoutReader::new(stdin.lock(), POLL_TIMEOUT_MS),
                 &config,
                 invocation.config_path.as_deref(),
@@ -222,12 +221,35 @@ fn main() -> ExitCode {
                 true,
                 &mut out,
             );
-            out.flush().ok();
-            if ran.is_some() {
-                ExitCode::SUCCESS
-            } else {
-                ExitCode::FAILURE
+            finish(stats, &mut out, false)
+        }
+    }
+}
+
+/// Map a finished pipeline to an exit code. A broken alert stream is a
+/// clean exit: the consumer (typically `jq` or a log rotator) decided the
+/// program's output was no longer wanted.
+fn finish(
+    result: io::Result<Option<PipelineStats>>,
+    out: &mut impl Write,
+    summarize: bool,
+) -> ExitCode {
+    out.flush().ok();
+    match result {
+        Ok(Some(stats)) => {
+            if summarize && stats.packets > 0 {
+                eprintln!(
+                    "sentinel-dns: {} packets, {} dns messages, {} alerts",
+                    stats.packets, stats.dns_messages, stats.alerts
+                );
             }
+            ExitCode::SUCCESS
+        }
+        Ok(None) => ExitCode::FAILURE,
+        Err(e) if e.kind() == io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("sentinel-dns: {e}");
+            ExitCode::FAILURE
         }
     }
 }
@@ -367,8 +389,11 @@ struct PipelineStats {
 /// a quiet pipe closes finished windows on wall-clock time; offline, all
 /// windows drain when the file ends. Windows strictly older than the
 /// current packet's window are closed as packets arrive, which keeps the
-/// tracker bounded even if timestamps jump backwards. Returns `None` when
-/// the stream is not a pcap file at all.
+/// tracker bounded even if timestamps jump backwards.
+///
+/// Returns `Err` when writing alerts fails (e.g. the reader of our stdout
+/// went away — a broken pipe must not scroll the journal). Returns
+/// `Ok(None)` when the stream is not a pcap file at all.
 fn run_pipeline<R: Read, W: Write>(
     reader: R,
     config: &Config,
@@ -376,12 +401,12 @@ fn run_pipeline<R: Read, W: Write>(
     verbose: bool,
     live: bool,
     out: &mut W,
-) -> Option<PipelineStats> {
+) -> io::Result<Option<PipelineStats>> {
     let mut reader = match pcap::PcapReader::new(reader) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("sentinel-dns: not a pcap stream: {e}");
-            return None;
+            return Ok(None);
         }
     };
     let mut tracker = Tracker::new(config.window_seconds);
@@ -390,7 +415,11 @@ fn run_pipeline<R: Read, W: Write>(
     let mut stats = PipelineStats::default();
 
     loop {
-        // SIGHUP is handled between packets and on poll timeouts.
+        // Shutdown and SIGHUP are handled at loop safe points.
+        if SHUTDOWN.swap(false, Ordering::SeqCst) {
+            eprintln!("sentinel-dns: shutdown signal: draining captured windows");
+            break;
+        }
         if RELOAD.swap(false, Ordering::SeqCst) {
             match cfg_path {
                 Some(p) => match Config::load(p) {
@@ -426,7 +455,7 @@ fn run_pipeline<R: Read, W: Write>(
                     &mut alerts,
                     out,
                     &mut stats.alerts,
-                );
+                )?;
                 out.flush().ok();
                 continue;
             }
@@ -447,7 +476,7 @@ fn run_pipeline<R: Read, W: Write>(
             &mut alerts,
             out,
             &mut stats.alerts,
-        );
+        )?;
 
         match dns::extract_query(&packet.data) {
             Ok(Some(q)) => {
@@ -485,10 +514,13 @@ fn run_pipeline<R: Read, W: Write>(
         &mut alerts,
         out,
         &mut stats.alerts,
-    );
-    Some(stats)
+    )?;
+    Ok(Some(stats))
 }
 
+/// Score and emit alerts for every window strictly older than `before`.
+/// An alert-stream write error (broken pipe, closed file) aborts: no
+/// consumer means no point in continuing to run.
 fn close_windows(
     tracker: &mut Tracker,
     before: u64,
@@ -496,17 +528,18 @@ fn close_windows(
     alerts: &mut AlertState,
     out: &mut impl Write,
     fired: &mut u64,
-) {
+) -> io::Result<()> {
     for (window, client, stats) in tracker.drain_older_than(before) {
         if let Some(alert) = alerts.close_window(config, window, client, &stats) {
             let line = alert.to_jsonl();
-            writeln!(out, "{line}").ok();
+            writeln!(out, "{line}")?;
             *fired += 1;
             if !config.webhook_url.is_empty() {
                 alert::send_webhook(config.webhook_url.clone(), line);
             }
         }
     }
+    Ok(())
 }
 
 fn unix_now() -> u64 {
@@ -558,9 +591,13 @@ fn selftest() -> ExitCode {
 
     let mut sink = Vec::new();
     let stats = match run_pipeline(&bytes[..], &cfg, None, false, false, &mut sink) {
-        Some(stats) => stats,
-        None => {
+        Ok(Some(stats)) => stats,
+        Ok(None) => {
             eprintln!("selftest: pipeline rejected the synthesized pcap");
+            return ExitCode::FAILURE;
+        }
+        Err(e) => {
+            eprintln!("selftest: pipeline error: {e}");
             return ExitCode::FAILURE;
         }
     };
@@ -595,9 +632,10 @@ fn selftest() -> ExitCode {
 
 #[cfg(test)]
 mod alert_state_tests {
-    use super::AlertState;
+    use super::{close_windows, AlertState};
     use crate::config::Config;
-    use crate::score::WindowStats;
+    use crate::score::{Tracker, WindowStats};
+    use std::io::{self, Write};
 
     fn bad_stats() -> WindowStats {
         WindowStats {
@@ -606,6 +644,58 @@ mod alert_state_tests {
             suspicious: 30,
             reasons: vec!["high_entropy".to_string()],
         }
+    }
+
+    /// A sink that fails every write, standing in for a closed stdout.
+    struct BrokenSink;
+    impl Write for BrokenSink {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            Err(io::Error::from(io::ErrorKind::BrokenPipe))
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_closed_alert_stream_stops_the_pipeline() {
+        let config = Config {
+            windows_before_alert: 1,
+            score_threshold: 0.6,
+            ..Config::default()
+        };
+        // A full DGA burst so the window crosses the threshold and actually
+        // writes to the (broken) sink.
+        let mut tracker = Tracker::new(60);
+        for i in 0..25u16 {
+            let name = format!("xq7z9w2k1v4b8-{i}.example.xyz");
+            tracker.observe_at(
+                &crate::dns::Query {
+                    name,
+                    qtype: 1,
+                    client: [10, 0, 0, 7],
+                    server: [1, 1, 1, 1],
+                    is_response: false,
+                    rcode: 0,
+                },
+                1700000000,
+            );
+        }
+        let mut alerts = AlertState::default();
+        let mut fired = 0u64;
+        let mut sink = BrokenSink;
+        let error = close_windows(
+            &mut tracker,
+            u64::MAX,
+            &config,
+            &mut alerts,
+            &mut sink,
+            &mut fired,
+        )
+        .err()
+        .expect("broken alert stream must surface");
+        assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+        assert_eq!(fired, 0);
     }
 
     #[test]
