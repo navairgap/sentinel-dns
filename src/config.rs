@@ -1,18 +1,69 @@
 //! Configuration: a flat JSON file, parsed by hand (no serde — the same
 //! zero-dependency policy as the rest of the codebase). Unknown keys are
-//! ignored so configs stay forward-compatible.
+//! ignored so configs stay forward-compatible. Every invalid value fails
+//! the load with a message naming the offending key.
 
 use std::collections::HashMap;
 use std::fs;
 use std::io;
+use std::net::Ipv4Addr;
 use std::path::Path;
+
+/// One `trusted_clients` entry: an exact address or a CIDR subnet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TrustedRule {
+    Exact(Ipv4Addr),
+    Cidr { network: u32, mask: u32 },
+}
+
+impl TrustedRule {
+    /// Parse `a.b.c.d` or `a.b.c.d/prefix`. The network address is
+    /// normalized, so `10.1.2.3/8` is accepted and treated as `10.0.0.0/8`.
+    pub fn parse(text: &str) -> Result<TrustedRule, String> {
+        let bad_addr = |s: &str| format!("invalid IPv4 address {s:?}");
+        match text.split_once('/') {
+            None => {
+                let ip: Ipv4Addr = text.parse().map_err(|_| bad_addr(text))?;
+                Ok(TrustedRule::Exact(ip))
+            }
+            Some((addr, prefix)) => {
+                let ip: Ipv4Addr = addr.trim().parse().map_err(|_| bad_addr(text))?;
+                let prefix: u8 = prefix
+                    .trim()
+                    .parse()
+                    .map_err(|_| format!("invalid prefix length in {text:?}"))?;
+                if prefix > 32 {
+                    return Err(format!(
+                        "prefix length {prefix} in {text:?} is out of range (0-32)"
+                    ));
+                }
+                let mask = if prefix == 0 {
+                    0
+                } else {
+                    u32::MAX << (32 - prefix as u32)
+                };
+                Ok(TrustedRule::Cidr {
+                    network: u32::from(ip) & mask,
+                    mask,
+                })
+            }
+        }
+    }
+
+    pub fn matches(&self, client: u32) -> bool {
+        match self {
+            TrustedRule::Exact(ip) => u32::from(*ip) == client,
+            TrustedRule::Cidr { network, mask } => *network == client & mask,
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct Config {
     pub window_seconds: u64,
     pub score_threshold: f64,
     pub windows_before_alert: u64,
-    pub trusted_clients: Vec<String>,
+    pub trusted_rules: Vec<TrustedRule>,
     pub webhook_url: String,
 }
 
@@ -22,7 +73,7 @@ impl Default for Config {
             window_seconds: 60,
             score_threshold: 0.6,
             windows_before_alert: 3,
-            trusted_clients: vec![],
+            trusted_rules: vec![],
             webhook_url: String::new(),
         }
     }
@@ -37,97 +88,134 @@ impl Config {
 
     pub fn load(path: &Path) -> io::Result<Config> {
         let text = fs::read_to_string(path)?;
-        Self::from_json(&text)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, format!("bad config {path:?}")))
+        Self::from_json(&text).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("{}: {e}", path.display()),
+            )
+        })
     }
 
-    pub fn from_json(text: &str) -> Option<Config> {
-        let map = parse_object(text)?;
+    pub fn from_json(text: &str) -> Result<Config, String> {
+        // Tolerate a UTF-8 BOM; everything else must be a flat JSON object.
+        let map = parse_object(text.trim_start_matches('\u{feff}'))?;
         let mut cfg = Config::default();
+
         if let Some(v) = map.get("window_seconds") {
-            cfg.window_seconds = v.parse().ok()?;
+            cfg.window_seconds = parse_number("window_seconds", v)?;
         }
         if let Some(v) = map.get("score_threshold") {
-            cfg.score_threshold = v.parse().ok()?;
+            cfg.score_threshold = parse_number("score_threshold", v)?;
         }
         if let Some(v) = map.get("windows_before_alert") {
-            cfg.windows_before_alert = v.parse().ok()?;
+            cfg.windows_before_alert = parse_number("windows_before_alert", v)?;
+        }
+        if let Some(v) = map.get("trusted_clients") {
+            let clients = if v.is_empty() {
+                Vec::new()
+            } else {
+                v.split(',')
+                    .map(TrustedRule::parse)
+                    .collect::<Result<Vec<_>, _>>()?
+            };
+            cfg.trusted_rules = clients;
         }
         if let Some(v) = map.get("webhook_url") {
             cfg.webhook_url = v.to_string();
         }
-        if let Some(v) = map.get("trusted_clients") {
-            cfg.trusted_clients = v
-                .split(',')
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(String::from)
-                .collect();
+
+        if cfg.window_seconds == 0 {
+            return Err("window_seconds must be at least 1".to_string());
         }
-        if cfg.window_seconds == 0
-            || cfg.windows_before_alert == 0
-            || !cfg.score_threshold.is_finite()
+        if cfg.windows_before_alert == 0 {
+            return Err("windows_before_alert must be at least 1".to_string());
+        }
+        if !cfg.score_threshold.is_finite()
             || !(0.0 < cfg.score_threshold && cfg.score_threshold <= 1.0)
-            || cfg.trusted_clients.iter().any(|ip| ip.parse::<std::net::Ipv4Addr>().is_err())
-            || (!cfg.webhook_url.is_empty() && !cfg.webhook_url.starts_with("https://"))
         {
-            return None;
+            return Err(
+                "score_threshold must be a number greater than 0 and at most 1".to_string(),
+            );
         }
-        Some(cfg)
+        if !cfg.webhook_url.is_empty() && !cfg.webhook_url.starts_with("https://") {
+            return Err(
+                "webhook_url must use https:// (plain HTTP would leak alert data)".to_string(),
+            );
+        }
+        Ok(cfg)
     }
 
     pub fn is_trusted(&self, client: [u8; 4]) -> bool {
-        let s = client.map(|b| b.to_string()).join(".");
-        self.trusted_clients.contains(&s)
+        let addr = u32::from_be_bytes(client);
+        self.trusted_rules.iter().any(|rule| rule.matches(addr))
     }
+}
+
+fn parse_number<T: std::str::FromStr>(key: &str, value: &str) -> Result<T, String> {
+    value
+        .trim()
+        .parse::<T>()
+        .map_err(|_| format!("{key}: {value:?} is not a valid number"))
 }
 
 /// Parse a flat JSON object into key/value strings. String arrays become
 /// comma-joined values. Nested objects are not supported and fail the
 /// parse — the config stays flat on purpose.
-fn parse_object(text: &str) -> Option<HashMap<String, String>> {
-    let mut map = HashMap::new();
+fn parse_object(text: &str) -> Result<HashMap<String, String>, String> {
     let t = text.trim();
-    let t = t.strip_prefix('{')?.strip_suffix('}')?.trim();
+    let t = t
+        .strip_prefix('{')
+        .and_then(|s| s.strip_suffix('}'))
+        .ok_or_else(|| "config must be a JSON object with flat key/value pairs".to_string())?
+        .trim();
+    let mut map = HashMap::new();
     if t.is_empty() {
-        return Some(map);
+        return Ok(map);
     }
     let mut rest = t;
     while !rest.is_empty() {
         let (key, after) = parse_string(rest)?;
         let after = after.trim_start();
-        let after = after.strip_prefix(':')?.trim_start();
+        let after = after
+            .strip_prefix(':')
+            .ok_or_else(|| format!("missing ':' after key {key:?}"))?
+            .trim_start();
         let (value, after) = parse_value(after)?;
         if map.contains_key(&key) {
-            return None;
+            return Err(format!("duplicate key {key:?}"));
         }
         map.insert(key, value);
         let after = after.trim_start();
         if after.is_empty() {
             break;
         }
-        rest = after.strip_prefix(',')?.trim_start();
+        rest = after
+            .strip_prefix(',')
+            .ok_or_else(|| "expected ',' between key/value pairs".to_string())?
+            .trim_start();
         // A comma must always be followed by another key/value pair.
         if rest.is_empty() {
-            return None;
+            return Err("trailing comma before end of object".to_string());
         }
     }
-    Some(map)
+    Ok(map)
 }
 
-fn parse_string(s: &str) -> Option<(String, &str)> {
+fn parse_string(s: &str) -> Result<(String, &str), String> {
     let bytes = s.as_bytes();
     if bytes.first() != Some(&b'"') {
-        return None;
+        return Err(format!("expected a quoted string, found {s:?}"));
     }
 
     let mut out = String::new();
     let mut index = 1;
     while index < bytes.len() {
         match bytes[index] {
-            b'"' => return Some((out, &s[index + 1..])),
+            b'"' => return Ok((out, &s[index + 1..])),
             b'\\' => {
-                let escaped = *bytes.get(index + 1)?;
+                let escaped = *bytes
+                    .get(index + 1)
+                    .ok_or_else(|| "string ends with a lone backslash".to_string())?;
                 let (decoded, consumed) = match escaped {
                     b'"' => ('"', 2),
                     b'\\' => ('\\', 2),
@@ -140,83 +228,154 @@ fn parse_string(s: &str) -> Option<(String, &str)> {
                     b'u' => {
                         let first = parse_hex4(bytes, index + 2)?;
                         if (0xd800..=0xdbff).contains(&first) {
-                            if bytes.get(index + 6..index + 8)? != b"\\u" {
-                                return None;
+                            if bytes.get(index + 6..index + 8) != Some(b"\\u".as_slice()) {
+                                return Err("unpaired surrogate in \\u escape".to_string());
                             }
                             let second = parse_hex4(bytes, index + 8)?;
                             if !(0xdc00..=0xdfff).contains(&second) {
-                                return None;
+                                return Err("unpaired surrogate in \\u escape".to_string());
                             }
                             let scalar = 0x10000
                                 + (((u32::from(first) - 0xd800) << 10)
                                     | (u32::from(second) - 0xdc00));
-                            (char::from_u32(scalar)?, 12)
+                            (
+                                char::from_u32(scalar)
+                                    .ok_or_else(|| "invalid surrogate pair".to_string())?,
+                                12,
+                            )
                         } else {
                             if (0xdc00..=0xdfff).contains(&first) {
-                                return None;
+                                return Err("unpaired low surrogate in \\u escape".to_string());
                             }
-                            (char::from_u32(u32::from(first))?, 6)
+                            (
+                                char::from_u32(u32::from(first))
+                                    .ok_or_else(|| "invalid \\u escape".to_string())?,
+                                6,
+                            )
                         }
                     }
-                    _ => return None,
+                    _ => return Err(format!("invalid escape sequence \\{}", escaped as char)),
                 };
                 out.push(decoded);
                 index += consumed;
             }
-            byte if byte < 0x20 => return None,
+            byte if byte < 0x20 => return Err("control character inside a string".to_string()),
             _ => {
-                let character = s[index..].chars().next()?;
+                let character = s[index..]
+                    .chars()
+                    .next()
+                    .ok_or_else(|| "invalid UTF-8".to_string())?;
                 out.push(character);
                 index += character.len_utf8();
             }
         }
     }
-    None
+    Err("string is not terminated".to_string())
 }
 
-fn parse_hex4(bytes: &[u8], start: usize) -> Option<u16> {
-    let digits = bytes.get(start..start.checked_add(4)?)?;
+fn parse_hex4(bytes: &[u8], start: usize) -> Result<u16, String> {
+    let digits = bytes
+        .get(
+            start
+                ..start
+                    .checked_add(4)
+                    .ok_or_else(|| "truncated \\u escape".to_string())?,
+        )
+        .ok_or_else(|| "truncated \\u escape".to_string())?;
     let mut value = 0u16;
     for digit in digits {
-        let nibble = (*digit as char).to_digit(16)? as u16;
-        value = value.checked_mul(16)?.checked_add(nibble)?;
+        let nibble = (*digit as char)
+            .to_digit(16)
+            .ok_or_else(|| "non-hex digit in \\u escape".to_string())? as u16;
+        value = value * 16 + nibble;
     }
-    Some(value)
+    Ok(value)
 }
 
-fn parse_value(s: &str) -> Option<(String, &str)> {
+fn parse_value(s: &str) -> Result<(String, &str), String> {
     if s.starts_with('"') {
         return parse_string(s);
     }
     if s.starts_with('[') {
-        let mut rest = s.strip_prefix('[')?.trim_start();
+        let mut rest = s.strip_prefix('[').expect("checked above").trim_start();
         let mut items = Vec::new();
         if let Some(after) = rest.strip_prefix(']') {
-            return Some((String::new(), after));
+            return Ok((String::new(), after));
         }
         loop {
             let (item, after) = parse_string(rest)?;
-            // This compact config schema stores trusted client IPs as a comma-
-            // joined value, so commas inside an array member are not supported.
+            // This compact config schema stores trusted client entries as a
+            // comma-joined value, so commas inside an array member would be
+            // ambiguous and are rejected.
             if item.is_empty() || item.contains(',') {
-                return None;
+                return Err("trusted_clients entries must be non-empty quoted strings".to_string());
             }
             items.push(item);
             rest = after.trim_start();
             if let Some(after_array) = rest.strip_prefix(']') {
-                return Some((items.join(","), after_array));
+                return Ok((items.join(","), after_array));
             }
-            rest = rest.strip_prefix(',')?.trim_start();
+            rest = rest
+                .strip_prefix(',')
+                .ok_or_else(|| "expected ',' between array members".to_string())?
+                .trim_start();
             if rest.starts_with(']') {
-                return None;
+                return Err("trailing comma in array".to_string());
             }
         }
     }
     let end = s.find([',', '}']).unwrap_or(s.len());
-    Some((s[..end].trim().to_string(), &s[end..]))
+    Ok((s[..end].trim().to_string(), &s[end..]))
 }
 
+#[cfg(test)]
+mod trusted_rule_tests {
+    use super::TrustedRule;
 
+    fn matches(rule: &str, client: [u8; 4]) -> bool {
+        TrustedRule::parse(rule)
+            .unwrap()
+            .matches(u32::from_be_bytes(client))
+    }
+
+    #[test]
+    fn exact_addresses_match_only_themselves() {
+        assert!(matches("10.0.0.7", [10, 0, 0, 7]));
+        assert!(!matches("10.0.0.7", [10, 0, 0, 8]));
+    }
+
+    #[test]
+    fn cidr_subnets_match_member_addresses() {
+        assert!(matches("10.0.0.0/8", [10, 200, 3, 4]));
+        assert!(!matches("10.0.0.0/8", [11, 0, 0, 1]));
+        assert!(matches("192.168.4.0/24", [192, 168, 4, 99]));
+        assert!(!matches("192.168.4.0/24", [192, 168, 5, 99]));
+        assert!(matches("1.2.3.4/32", [1, 2, 3, 4]));
+        assert!(!matches("1.2.3.4/32", [1, 2, 3, 5]));
+        assert!(matches("0.0.0.0/0", [203, 0, 113, 9]));
+    }
+
+    #[test]
+    fn cidr_networks_are_normalized() {
+        // Host bits set in the configured network are masked off.
+        assert!(matches("10.9.9.9/8", [10, 1, 2, 3]));
+    }
+
+    #[test]
+    fn rejects_malformed_entries() {
+        for text in [
+            "not-an-ip",
+            "10.0.0.0/33",
+            "10.0.0.0/x",
+            "10.0.0.0/",
+            "10.0.0/8",
+            "10.0.0.999",
+            "",
+        ] {
+            assert!(TrustedRule::parse(text).is_err(), "accepted {text:?}");
+        }
+    }
+}
 
 #[cfg(test)]
 mod validation_tests {
@@ -233,24 +392,33 @@ mod validation_tests {
             r#"{"webhook_url": "http://example.invalid/hook"}"#,
             r#"{"trusted_clients": ["not-an-ip"]}"#,
         ] {
-            assert!(Config::from_json(text).is_none(), "accepted invalid config: {text}");
+            assert!(
+                Config::from_json(text).is_err(),
+                "accepted invalid config: {text}"
+            );
         }
     }
 
     #[test]
+    fn error_messages_name_the_offending_key() {
+        let e = Config::from_json(r#"{"window_seconds": 0}"#).unwrap_err();
+        assert!(e.contains("window_seconds"), "message: {e}");
+        let e = Config::from_json(r#"{"webhook_url": "http://x/"}"#).unwrap_err();
+        assert!(e.contains("https://"), "message: {e}");
+        let e = Config::from_json(r#"{"trusted_clients": ["nope"]}"#).unwrap_err();
+        assert!(e.contains("nope"), "message: {e}");
+    }
+
+    #[test]
     fn rejects_duplicate_keys_instead_of_silently_overwriting() {
-        assert!(Config::from_json(
-            r#"{"window_seconds": 30, "window_seconds": 120}"#
-        ).is_none());
-        assert!(Config::from_json(
-            r#"{"unknown": 1, "unknown": 2}"#
-        ).is_none());
+        assert!(Config::from_json(r#"{"window_seconds": 30, "window_seconds": 120}"#).is_err());
+        assert!(Config::from_json(r#"{"unknown": 1, "unknown": 2}"#).is_err());
     }
 
     #[test]
     fn rejects_trailing_commas_in_config_objects() {
-        assert!(Config::from_json(r#"{ "window_seconds": 30, }"#).is_none());
-        assert!(Config::from_json(r#"{ "window_seconds": 30,   }"#).is_none());
+        assert!(Config::from_json(r#"{ "window_seconds": 30, }"#).is_err());
+        assert!(Config::from_json(r#"{ "window_seconds": 30,   }"#).is_err());
     }
 
     #[test]
@@ -261,27 +429,32 @@ mod validation_tests {
             r#"{ "trusted_clients": [192.168.1.1] }"#,
             r#"{ "trusted_clients": [""] }"#,
         ] {
-            assert!(Config::from_json(text).is_none(), "accepted malformed array: {text}");
+            assert!(
+                Config::from_json(text).is_err(),
+                "accepted malformed array: {text}"
+            );
         }
     }
 
     #[test]
     fn accepts_valid_custom_settings() {
         let cfg = Config::from_json(
-            r#"{"window_seconds": 30, "score_threshold": 0.75, "windows_before_alert": 2, "trusted_clients": ["192.168.1.1"], "webhook_url": "https://example.invalid/hook"}"#,
+            r#"{"window_seconds": 30, "score_threshold": 0.75, "windows_before_alert": 2, "trusted_clients": ["192.168.1.1", "10.0.0.0/8"], "webhook_url": "https://example.invalid/hook"}"#,
         )
         .expect("valid config should parse");
         assert_eq!(cfg.window_seconds, 30);
         assert_eq!(cfg.score_threshold, 0.75);
         assert_eq!(cfg.windows_before_alert, 2);
         assert!(cfg.is_trusted([192, 168, 1, 1]));
+        assert!(cfg.is_trusted([10, 42, 42, 42]));
+        assert!(!cfg.is_trusted([192, 168, 1, 2]));
     }
 
     #[test]
     fn decodes_json_string_escapes_and_unicode() {
-        let (decoded, rest) = super::parse_string(
-            r#""path\/with\\slash and \"quotes\" \u2764 \uD83D\uDE80""#
-        ).unwrap();
+        let (decoded, rest) =
+            super::parse_string(r#""path\/with\\slash and \"quotes\" \u2764 \uD83D\uDE80""#)
+                .unwrap();
         assert_eq!(decoded, "path/with\\slash and \"quotes\" ❤ 🚀");
         assert_eq!(rest, "");
     }
@@ -296,26 +469,27 @@ mod validation_tests {
             "\"lone low surrogate \\uDC00\"",
             "\"invalid pair \\uD800\\u0041\"",
         ] {
-            assert!(super::parse_string(value).is_none(), "accepted {value:?}");
+            assert!(super::parse_string(value).is_err(), "accepted {value:?}");
         }
     }
 
     #[test]
     fn parses_escaped_webhook_string_from_config() {
-        let cfg = Config::from_json(
-            r#"{ "webhook_url": "https:\/\/example.invalid\/hook" }"#
-        ).expect("escaped slashes are valid JSON strings");
+        let cfg = Config::from_json(r#"{ "webhook_url": "https:\/\/example.invalid\/hook" }"#)
+            .expect("escaped slashes are valid JSON strings");
         assert_eq!(cfg.webhook_url, "https://example.invalid/hook");
     }
 
     #[test]
-    fn trusted_client_array_parser_rejects_trailing_members() {
-        for value in [
-            r#"{ "trusted_clients": ["192.0.2.1",] }"#,
-            r#"{ "trusted_clients": ["192.0.2.1", 42] }"#,
-        ] {
-            assert!(Config::from_json(value).is_none());
-        }
+    fn tolerates_a_utf8_bom() {
+        let cfg = Config::from_json("\u{feff}{\"window_seconds\": 45}").expect("BOM is tolerated");
+        assert_eq!(cfg.window_seconds, 45);
     }
 
+    #[test]
+    fn rejects_non_object_documents() {
+        for text in ["[]", "\"just a string\"", "42"] {
+            assert!(Config::from_json(text).is_err(), "accepted {text}");
+        }
+    }
 }
