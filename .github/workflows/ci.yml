@@ -24,5 +24,7 @@ jobs:
         run: cargo test --verbose
       - name: selftest
         run: cargo run --quiet -- selftest
+      - name: release build
+        run: cargo build --release
       - name: clippy
         run: cargo clippy -- -D warnings
