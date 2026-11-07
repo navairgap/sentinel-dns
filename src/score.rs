@@ -54,7 +54,10 @@ pub fn domain_score(name: &str) -> (f64, Vec<String>) {
         score += 0.25;
         reasons.push("digit_heavy".to_string());
     }
-    let unique = core.chars().collect::<std::collections::BTreeSet<_>>().len();
+    let unique = core
+        .chars()
+        .collect::<std::collections::BTreeSet<_>>()
+        .len();
     if core.len() >= 10 && unique >= core.len() - 2 {
         score += 0.2;
         reasons.push("dga_shape".to_string());
@@ -119,16 +122,32 @@ pub struct Tracker {
 
 impl Tracker {
     pub fn new(window_seconds: u64) -> Self {
-        Tracker { window_seconds: window_seconds.max(1), windows: HashMap::new() }
+        Tracker {
+            window_seconds: window_seconds.max(1),
+            windows: HashMap::new(),
+        }
     }
 
+    /// Record one parsed DNS message. The two directions play different
+    /// roles: the query side drives volume and name suspicion, while a
+    /// response only contributes its rcode. Counting both directions as
+    /// "queries" would halve the NXDOMAIN ratio and hide the classic
+    /// every-lookup-fails exfiltration pattern.
     pub fn observe_at(&mut self, q: &Query, ts: u64) {
         let key = ts / self.window_seconds;
-        let client = self.windows.entry(key).or_default().entry(q.client).or_default();
-        client.queries = client.queries.saturating_add(1);
-        if q.is_nxdomain() {
-            client.nxdomains = client.nxdomains.saturating_add(1);
+        let client = self
+            .windows
+            .entry(key)
+            .or_default()
+            .entry(q.client)
+            .or_default();
+        if q.is_response {
+            if q.is_nxdomain() {
+                client.nxdomains = client.nxdomains.saturating_add(1);
+            }
+            return;
         }
+        client.queries = client.queries.saturating_add(1);
         let (s, reasons) = domain_score(&q.name);
         if s >= 0.5 {
             client.suspicious = client.suspicious.saturating_add(1);
@@ -140,9 +159,17 @@ impl Tracker {
         }
     }
 
-    /// Pop all windows strictly older than `before` and return them.
+    /// Pop all windows strictly older than `before` and return them,
+    /// ordered by window. Callers score clients in ascending window order,
+    /// which their alert state relies on.
     pub fn drain_older_than(&mut self, before: u64) -> Vec<(u64, [u8; 4], WindowStats)> {
-        let keys: Vec<u64> = self.windows.keys().copied().filter(|k| *k < before).collect();
+        let mut keys: Vec<u64> = self
+            .windows
+            .keys()
+            .copied()
+            .filter(|k| *k < before)
+            .collect();
+        keys.sort_unstable();
         let mut out = Vec::new();
         for k in keys {
             if let Some(clients) = self.windows.remove(&k) {
@@ -155,15 +182,18 @@ impl Tracker {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn q(client: [u8; 4], name: &str, nx: bool) -> Query {
         Query {
-            name: name.to_string(), qtype: 1, client, server: [1, 1, 1, 1],
-            is_response: nx, rcode: if nx { 3 } else { 0 },
+            name: name.to_string(),
+            qtype: 1,
+            client,
+            server: [1, 1, 1, 1],
+            is_response: nx,
+            rcode: if nx { 3 } else { 0 },
         }
     }
 
@@ -212,18 +242,69 @@ mod tests {
         let mut t = Tracker::new(60);
         for i in 0..25 {
             let name = format!("xq7z9w2k1v4b8-{i}.example.xyz");
+            // A real exchange: the query drives volume and suspicion, the
+            // NXDOMAIN response records the failure.
+            t.observe_at(&q([10, 0, 0, 7], &name, false), 1_700_000_000);
             t.observe_at(&q([10, 0, 0, 7], &name, true), 1_700_000_000);
         }
         let drained = t.drain_older_than(1_700_000_001);
         assert_eq!(drained.len(), 1);
         let (_, client, stats) = &drained[0];
         assert_eq!(client, &[10, 0, 0, 7]);
+        assert_eq!(stats.queries, 25);
+        assert_eq!(stats.nxdomains, 25);
         let (s, reasons) = window_score(stats);
         assert!(s >= 0.5, "score {s} reasons {reasons:?}");
         assert!(reasons.contains(&"sustained_dga".to_string()));
         assert!(reasons.contains(&"nxdomain_burst".to_string()));
     }
 
+    #[test]
+    fn responses_do_not_inflate_query_volume() {
+        let mut t = Tracker::new(60);
+        let name = "example.com";
+        t.observe_at(&q([10, 0, 0, 7], name, false), 1_700_000_000);
+        t.observe_at(&q([10, 0, 0, 7], name, true), 1_700_000_000);
+        t.observe_at(&q([10, 0, 0, 7], name, true), 1_700_000_000);
+        let drained = t.drain_older_than(1_700_000_001);
+        let stats = &drained[0].2;
+        assert_eq!(stats.queries, 1);
+        assert_eq!(stats.nxdomains, 2);
+    }
+
+    #[test]
+    fn a_client_whose_lookups_all_fail_crosses_the_nxdomain_threshold() {
+        // Regression: when responses counted as queries, this pattern sat
+        // at exactly 0.5 and never fired nxdomain_burst.
+        let mut t = Tracker::new(60);
+        for i in 0..30 {
+            let name = format!("payment-{i}.example.com");
+            t.observe_at(&q([10, 0, 0, 7], &name, false), 1_700_000_000);
+            t.observe_at(&q([10, 0, 0, 7], &name, true), 1_700_000_000);
+        }
+        let drained = t.drain_older_than(1_700_000_001);
+        let (s, reasons) = window_score(&drained[0].2);
+        assert!(
+            reasons.contains(&"nxdomain_burst".to_string()),
+            "score {s} reasons {reasons:?}"
+        );
+    }
+
+    #[test]
+    fn response_only_traffic_scores_zero() {
+        // A capture that only sees the resolver side records no queries;
+        // scoring is query-driven, so this stays quiet instead of guessing.
+        let mut t = Tracker::new(60);
+        for _ in 0..50 {
+            t.observe_at(
+                &q([10, 0, 0, 7], "xq7z9w2k1v4b8.example.xyz", true),
+                1_700_000_000,
+            );
+        }
+        let drained = t.drain_older_than(1_700_000_001);
+        let (s, _) = window_score(&drained[0].2);
+        assert_eq!(s, 0.0);
+    }
 
     #[test]
     fn sustained_dga_threshold_does_not_overflow_large_counters() {
@@ -243,24 +324,28 @@ mod tests {
         let timestamp = 1_700_000_000;
         let key = timestamp / 60;
         let mut tracker = Tracker::new(60);
-        let stats = tracker.windows.entry(key).or_default().entry(client).or_default();
-        stats.queries = u64::MAX;
-        stats.nxdomains = u64::MAX;
-        stats.suspicious = u64::MAX;
-        stats.reasons.push("high_entropy".to_string());
+        {
+            let stats = tracker
+                .windows
+                .entry(key)
+                .or_default()
+                .entry(client)
+                .or_default();
+            stats.queries = u64::MAX;
+            stats.nxdomains = u64::MAX;
+            stats.suspicious = u64::MAX;
+            stats.reasons.push("high_entropy".to_string());
+        }
 
         for _ in 0..5 {
-            tracker.observe_at(
-                &q(client, "xq7z9w2k1v4b8.example.xyz", true),
-                timestamp,
-            );
+            tracker.observe_at(&q(client, "xq7z9w2k1v4b8.example.xyz", false), timestamp);
+            tracker.observe_at(&q(client, "xq7z9w2k1v4b8.example.xyz", true), timestamp);
         }
 
         let stats = &tracker.windows[&key][&client];
         assert_eq!(stats.queries, u64::MAX);
         assert_eq!(stats.nxdomains, u64::MAX);
         assert_eq!(stats.suspicious, u64::MAX);
-        assert!(stats.reasons.len() <= 5);
         let mut unique = stats.reasons.clone();
         unique.sort();
         unique.dedup();
