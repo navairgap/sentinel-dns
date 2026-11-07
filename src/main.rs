@@ -53,8 +53,8 @@ COMMANDS:
     config                  print the default configuration
 
 OPTIONS:
-    -c, --config <path>     config file (default: built-in defaults)
-    -v, --verbose           log skipped packets to stderr
+    -c, --config <path>     config file, also --config=<path> (default: built-in defaults)
+    -v, --verbose           log skipped packets and closed windows to stderr
     -V, --version           print the version
     -h, --help              print this help
 ";
@@ -86,17 +86,34 @@ fn parse_args(args: &[String]) -> Result<Invocation, String> {
     let mut i = 0;
     while i < args.len() {
         let arg = args[i].as_str();
+        // Both flag spellings of the config path: `-c path`, `--config path`,
+        // and the attached form `--config=path`.
+        let config_flag_value = if arg == "-c" || arg == "--config" {
+            i += 1;
+            Some(
+                args.get(i)
+                    .ok_or_else(|| "-c/--config needs a file path".to_string())?
+                    .as_str(),
+            )
+        } else {
+            arg.strip_prefix("--config=")
+                .or_else(|| arg.strip_prefix("-c="))
+                .map(|v| {
+                    if v.is_empty() {
+                        return Err("-c/--config needs a file path".to_string());
+                    }
+                    Ok(v)
+                })
+                .transpose()?
+        };
         match arg {
-            "-v" | "--verbose" => verbose = true,
-            "-c" | "--config" => {
-                i += 1;
-                let value = args
-                    .get(i)
-                    .ok_or_else(|| "-c/--config needs a file path".to_string())?;
+            _ if config_flag_value.is_some() => {
+                let value = config_flag_value.expect("checked above");
                 if config_path.replace(PathBuf::from(value)).is_some() {
                     return Err("-c/--config given more than once".to_string());
                 }
             }
+            "-v" | "--verbose" => verbose = true,
             "-V" | "--version" => {
                 if command.is_some() {
                     return Err("--version cannot be combined with a command".to_string());
@@ -905,6 +922,26 @@ mod args_tests {
     fn missing_config_value_is_an_error() {
         let e = parse_args(&args(&["watch", "-c"])).unwrap_err();
         assert!(e.contains("-c"), "message: {e}");
+    }
+
+    #[test]
+    fn config_flag_accepts_attached_values() {
+        let inv = parse_args(&args(&["watch", "--config=cfg.json"])).unwrap();
+        assert_eq!(
+            inv.config_path.as_deref(),
+            Some(std::path::Path::new("cfg.json"))
+        );
+        let inv = parse_args(&args(&["analyze", "c.pcap", "-c=cfg.json"])).unwrap();
+        assert_eq!(
+            inv.config_path.as_deref(),
+            Some(std::path::Path::new("cfg.json"))
+        );
+    }
+
+    #[test]
+    fn attached_config_flag_rejects_an_empty_value() {
+        assert!(parse_args(&args(&["watch", "--config="])).is_err());
+        assert!(parse_args(&args(&["watch", "-c="])).is_err());
     }
 
     #[test]
