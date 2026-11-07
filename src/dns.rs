@@ -100,8 +100,12 @@ pub fn extract_query(frame: &[u8]) -> Result<Option<Query>, ParseError> {
     };
     let q = parse_dns_message(dns)?;
     Ok(Some(Query {
-        name: q.0, qtype: q.1, client, server,
-        is_response: q.2, rcode: q.3,
+        name: q.0,
+        qtype: q.1,
+        client,
+        server,
+        is_response: q.2,
+        rcode: q.3,
     }))
 }
 
@@ -207,8 +211,6 @@ pub fn build_response(query: &[u8], rcode: u8) -> Vec<u8> {
     msg
 }
 
-
-
 #[cfg(test)]
 mod packet_framing_tests {
     use super::{build_response, extract_query, parse_dns_message, read_name, ParseError, Query};
@@ -216,8 +218,13 @@ mod packet_framing_tests {
     use crate::pcap::udp_frame;
 
     fn sample_frame() -> Vec<u8> {
-        udp_frame([192, 168, 1, 20], [1, 1, 1, 1], 53000, 53,
-                  &build_query(1, "example.com", 1))
+        udp_frame(
+            [192, 168, 1, 20],
+            [1, 1, 1, 1],
+            53000,
+            53,
+            &build_query(1, "example.com", 1),
+        )
     }
 
     #[test]
@@ -228,14 +235,20 @@ mod packet_framing_tests {
             message.extend(std::iter::repeat(b'a').take(63));
         }
         message.push(0);
-        assert!(matches!(read_name(&message, 0), Err(ParseError::MalformedName)));
+        assert!(matches!(
+            read_name(&message, 0),
+            Err(ParseError::MalformedName)
+        ));
     }
 
     #[test]
     fn rejects_ipv4_header_lengths_below_minimum() {
         let mut frame = sample_frame();
         frame[14] = 0x44; // IHL=16 bytes, invalid for IPv4.
-        assert!(matches!(extract_query(&frame), Err(ParseError::MalformedIpHeader)));
+        assert!(matches!(
+            extract_query(&frame),
+            Err(ParseError::MalformedIpHeader)
+        ));
     }
 
     #[test]
@@ -249,7 +262,10 @@ mod packet_framing_tests {
     fn rejects_udp_lengths_shorter_than_header() {
         let mut frame = sample_frame();
         frame[38..40].copy_from_slice(&7u16.to_be_bytes());
-        assert!(matches!(extract_query(&frame), Err(ParseError::MalformedUdp)));
+        assert!(matches!(
+            extract_query(&frame),
+            Err(ParseError::MalformedUdp)
+        ));
     }
 
     #[test]
@@ -270,7 +286,10 @@ mod packet_framing_tests {
     #[test]
     fn rejects_dns_messages_without_questions() {
         let message = vec![0u8; 12];
-        assert!(matches!(parse_dns_message(&message), Err(ParseError::MalformedName)));
+        assert!(matches!(
+            parse_dns_message(&message),
+            Err(ParseError::MalformedName)
+        ));
     }
 
     #[test]
@@ -285,12 +304,18 @@ mod packet_framing_tests {
     #[test]
     fn rejects_a_forward_compression_pointer() {
         let message = [0xc0, 0x02, 0x00];
-        assert!(matches!(read_name(&message, 0), Err(ParseError::MalformedName)));
+        assert!(matches!(
+            read_name(&message, 0),
+            Err(ParseError::MalformedName)
+        ));
     }
 
     #[test]
     fn rejects_a_truncated_compression_pointer() {
-        assert!(matches!(read_name(&[0xc0], 0), Err(ParseError::MalformedName)));
+        assert!(matches!(
+            read_name(&[0xc0], 0),
+            Err(ParseError::MalformedName)
+        ));
     }
 
     #[test]
@@ -309,7 +334,6 @@ mod packet_framing_tests {
         assert_eq!(query.client, [192, 168, 1, 20]);
     }
 }
-
 
 #[cfg(test)]
 mod ip_version_validation_tests {
