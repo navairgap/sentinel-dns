@@ -1,10 +1,19 @@
 [package]
 name = "sentinel-dns"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
-description = "passive DNS exfiltration and DGA detection — resolver-side, no cloud lookups"
+rust-version = "1.74"
+description = "Passive DNS exfiltration and DGA detection at the resolver — no cloud lookups, works air-gapped"
 license = "MIT"
+repository = "https://github.com/navairgap/sentinel-dns"
+keywords = ["dns", "security", "dga", "exfiltration", "pcap"]
+categories = ["command-line-utilities", "network-programming"]
 
 [dependencies]
 libc = "0.2"
 ureq = { version = "2.12", default-features = false, features = ["tls"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
