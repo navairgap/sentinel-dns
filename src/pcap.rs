@@ -525,3 +525,80 @@ mod tests {
         assert!(reader.next_packet().unwrap().is_none());
     }
 }
+
+#[cfg(test)]
+mod record_validation_tests {
+    use super::{build_pcap, PcapReader};
+    use std::io::Cursor;
+
+    #[test]
+    fn captured_length_at_the_snaplen_boundary_is_accepted() {
+        let payload = vec![0u8; 100];
+        let mut bytes = build_pcap(false, &[(10, 0, payload)]);
+        bytes[16..20].copy_from_slice(&100u32.to_le_bytes()); // snaplen == incl_len
+        let mut reader = PcapReader::new(Cursor::new(bytes)).unwrap();
+        let packet = reader
+            .next_packet()
+            .unwrap()
+            .expect("boundary length is legal");
+        assert_eq!(packet.data.len(), 100);
+    }
+
+    #[test]
+    fn captured_length_over_the_hard_cap_is_rejected() {
+        // incl_len above the 16 MiB cap, with a snaplen large enough that
+        // only the cap catches it.
+        let mut bytes = build_pcap(false, &[]);
+        bytes.extend_from_slice(&10u32.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&(17 * 1024 * 1024 as u32).to_le_bytes()); // incl_len
+        bytes.extend_from_slice(&(17 * 1024 * 1024 as u32).to_le_bytes()); // orig_len
+        let mut reader = PcapReader::new(Cursor::new(bytes)).unwrap();
+        let error = reader.next_packet().unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("too large"));
+    }
+
+    #[test]
+    fn records_follow_each_other_back_to_back() {
+        let packets = vec![
+            (1u32, 0u32, vec![1u8]),
+            (2, 1, vec![2, 2]),
+            (3, 2, vec![3, 3, 3]),
+            (4, 3, vec![]),
+        ];
+        let bytes = build_pcap(false, &packets);
+        let mut reader = PcapReader::new(Cursor::new(bytes)).unwrap();
+        for (ts_sec, ts_usec, data) in &packets {
+            let p = reader.next_packet().unwrap().expect("record exists");
+            assert_eq!(p.ts_sec, *ts_sec);
+            assert_eq!(p.ts_usec, *ts_usec);
+            assert_eq!(&p.data, data);
+        }
+        assert!(reader.next_packet().unwrap().is_none());
+    }
+
+    #[test]
+    fn a_truncated_header_after_valid_records_is_clean_eof() {
+        let mut bytes = build_pcap(false, &[(1, 0, vec![9])]);
+        bytes.extend_from_slice(&[0xde, 0xad]); // 2 of 16 record-header bytes
+        let mut reader = PcapReader::new(Cursor::new(bytes)).unwrap();
+        assert!(reader.next_packet().unwrap().is_some());
+        assert!(reader.next_packet().unwrap().is_none());
+    }
+}
+
+#[cfg(test)]
+mod linktype_tests {
+    use super::{build_pcap, PcapReader};
+    use std::io::Cursor;
+
+    #[test]
+    fn non_ethernet_linktypes_are_rejected_by_name() {
+        let mut bytes = build_pcap(false, &[]);
+        // Linktype field occupies global-header bytes 20..24.
+        bytes[20..24].copy_from_slice(&113u32.to_le_bytes()); // Linux SLL
+        let error = PcapReader::new(Cursor::new(bytes)).err().expect("rejected");
+        assert!(error.to_string().contains("linktype"), "message: {error}");
+    }
+}
