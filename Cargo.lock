@@ -273,7 +273,7 @@ dependencies = [
 
 [[package]]
 name = "sentinel-dns"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "libc",
  "ureq",
