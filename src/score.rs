@@ -383,3 +383,81 @@ mod tests {
         assert_eq!(s, 0.0);
     }
 }
+
+#[cfg(test)]
+mod heuristic_tests {
+    use super::domain_score;
+
+    fn reasons(name: &str) -> Vec<String> {
+        domain_score(name).1
+    }
+
+    #[test]
+    fn entropy_alone_flags_long_random_labels() {
+        let (s, r) = domain_score("qxzvkwjrpcmtnfghl.example.com");
+        assert!(r.contains(&"high_entropy".to_string()), "{r:?}");
+        assert!(s >= 0.45);
+    }
+
+    #[test]
+    fn digit_ratio_alone_flags_numeric_labels() {
+        let (s, r) = domain_score("948271.example.com");
+        assert!(r.contains(&"digit_heavy".to_string()), "{r:?}");
+        assert!(s >= 0.25);
+    }
+
+    #[test]
+    fn unique_character_shape_alone_flags_dga_names() {
+        let (s, r) = domain_score("plkmnvbqwertzxc.example.com");
+        assert!(r.contains(&"dga_shape".to_string()), "{r:?}");
+        assert!(s >= 0.20);
+    }
+
+    #[test]
+    fn vowel_absence_alone_flags_consonant_runs() {
+        let (s, r) = domain_score("bcdfghjk.example.com");
+        assert!(r.contains(&"no_vowels".to_string()), "{r:?}");
+        assert!(s >= 0.10);
+    }
+
+    #[test]
+    fn cheap_tlds_flag_regardless_of_the_name() {
+        for tld in [".xyz", ".top", ".buzz", ".icu", ".cam"] {
+            let r = reasons(&format!("example{tld}"));
+            assert!(r.contains(&"cheap_tld".to_string()), "{tld}: {r:?}");
+        }
+        assert!(!reasons("example.com").contains(&"cheap_tld".to_string()));
+    }
+
+    #[test]
+    fn long_labels_flag_as_oversize() {
+        let name = format!("{}.example.com", "a".repeat(41));
+        let (s, r) = domain_score(&name);
+        assert!(r.contains(&"oversize_label".to_string()), "{r:?}");
+        assert!(s >= 0.10);
+    }
+
+    #[test]
+    fn scoring_is_case_insensitive() {
+        let (lower, lower_reasons) = domain_score("xq7z9w2k1v4b8.example.xyz");
+        let (upper, upper_reasons) = domain_score("XQ7Z9W2K1V4B8.EXAMPLE.XYZ");
+        assert!((lower - upper).abs() < f64::EPSILON);
+        assert_eq!(lower_reasons.len(), upper_reasons.len());
+    }
+
+    #[test]
+    fn only_the_first_label_is_scored() {
+        // A random-looking domain on a third-level label is not the
+        // client's fault and must not score.
+        let (s, r) = domain_score("example.com.xq7z9w2k1v4b8.tld");
+        assert_eq!(s, 0.0, "reasons {r:?}");
+    }
+
+    #[test]
+    fn short_benign_labels_stay_quiet() {
+        for name in ["ns1.example.com", "www.example.com", "mx2.example.org"] {
+            let (s, r) = domain_score(name);
+            assert_eq!(s, 0.0, "{name}: {r:?}");
+        }
+    }
+}
