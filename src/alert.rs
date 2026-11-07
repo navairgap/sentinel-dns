@@ -14,6 +14,10 @@ pub struct Alert {
     pub reasons: Vec<String>,
     pub queries: u64,
     pub nxdomains: u64,
+    /// Questions whose names scored as high-suspicion. Triages severity at
+    /// a glance: a flood of NXDOMAINs with zero suspicious names is a very
+    /// different incident from a sustained DGA burst.
+    pub suspicious: u64,
 }
 
 fn json_string(value: &str) -> String {
@@ -60,8 +64,8 @@ impl Alert {
         }
         let _ = write!(
             s,
-            "],\"queries\":{},\"nxdomains\":{}}}",
-            self.queries, self.nxdomains
+            "],\"queries\":{},\"nxdomains\":{},\"suspicious\":{}}}",
+            self.queries, self.nxdomains, self.suspicious
         );
         s
     }
@@ -132,6 +136,7 @@ mod jsonl_tests {
             reasons: Vec::new(),
             queries: 1,
             nxdomains: 0,
+            suspicious: 0,
         };
         assert!(make_alert(f64::NAN).to_jsonl().contains(r#""score":0.00"#));
         assert!(make_alert(f64::INFINITY)
@@ -150,11 +155,42 @@ mod jsonl_tests {
             reasons: vec!["query\nvolume".to_string()],
             queries: 12,
             nxdomains: 3,
+            suspicious: 4,
         };
         let line = alert.to_jsonl();
         assert!(line.contains("192.0.2.1\\\"bad"));
         assert!(line.contains("query\\nvolume"));
+        assert!(line.contains(r#""suspicious":4"#));
         assert!(line.starts_with("{\"v\":1,"));
+    }
+
+    #[test]
+    fn alert_jsonl_carries_every_counter() {
+        let alert = Alert {
+            client: "10.0.0.7".to_string(),
+            window_start: 1700000040,
+            score: 1.0,
+            reasons: vec!["sustained_dga".to_string(), "flag_domains".to_string()],
+            queries: 25,
+            nxdomains: 0,
+            suspicious: 25,
+        };
+        let line = alert.to_jsonl();
+        for key in [
+            "client",
+            "window",
+            "score",
+            "reasons",
+            "queries",
+            "nxdomains",
+            "suspicious",
+        ] {
+            assert!(
+                line.contains(&format!("\"{key}\"")),
+                "missing key {key}: {line}"
+            );
+        }
+        assert!(line.ends_with(r#""suspicious":25}"#));
     }
 }
 

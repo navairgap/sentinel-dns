@@ -367,6 +367,7 @@ impl AlertState {
                     reasons,
                     queries: stats.queries,
                     nxdomains: stats.nxdomains,
+                    suspicious: stats.suspicious,
                 });
             }
         } else {
