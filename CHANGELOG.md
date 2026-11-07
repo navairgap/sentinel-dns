@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.3.0
+
+### Added
+
+- `SIGINT`/`SIGTERM` now drain: the pipeline stops reading and scores
+  everything already captured before exiting cleanly, instead of dying
+  mid-read. A closed alert stream (broken pipe) also ends the run — with
+  exit status 0, since the consumer chose to stop reading.
+- Alerts carry a `suspicious` field: the number of questions whose names
+  scored as high-suspicion, so an NXDOMAIN flood and a DGA burst are
+  distinguishable at a glance.
+- `analyze` accepts multiple capture files and scores them as one
+  timeline: streaks continue across files, every file is opened before
+  analysis starts, and per-file plus total packet counts are reported.
+- `-v` logs every closed window with its score, volumes, and an ALERT
+  marker — tuning runs can be followed without parsing the alert stream.
+- `--config=path` and `-c=path` flag forms alongside `-c path`.
+- Man page (`docs/sentinel-dns.1`), CONTRIBUTING, and SECURITY policy.
+
+### Changed
+
+- Config values parse into a typed layer and known keys validate strictly
+  at conversion; unknown keys tolerate any value shape (arrays, nested
+  objects, null), which the README had always promised.
+
 ## 0.2.0
 
 ### Fixed
