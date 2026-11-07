@@ -47,21 +47,40 @@ impl Alert {
         } else {
             0.0
         };
-        let _ = write!(s, ",\"window\":{},\"score\":{:.2},\"reasons\":[", self.window_start, score);
+        let _ = write!(
+            s,
+            ",\"window\":{},\"score\":{:.2},\"reasons\":[",
+            self.window_start, score
+        );
         for (i, reason) in self.reasons.iter().enumerate() {
-            if i > 0 { s.push(','); }
+            if i > 0 {
+                s.push(',');
+            }
             s.push_str(&json_string(reason));
         }
-        let _ = write!(s, "],\"queries\":{},\"nxdomains\":{}}}", self.queries, self.nxdomains);
+        let _ = write!(
+            s,
+            "],\"queries\":{},\"nxdomains\":{}}}",
+            self.queries, self.nxdomains
+        );
         s
     }
 }
 
-/// Fire-and-forget webhook POST. Failures are written to stderr and never
-/// stop the pipeline — alerting must not become the outage.
-pub fn send_webhook(url: &str, body: &str) {
-    if let Err(e) = try_send(url, body) {
-        eprintln!("sentinel-dns: webhook failed: {e}");
+/// Fire-and-forget webhook POST on a background thread, so a slow or
+/// broken endpoint never stalls packet analysis — alerting must not become
+/// the outage. Failures are logged to stderr from that thread. Delivery is
+/// best-effort: a process exit may cut a delivery short.
+pub fn send_webhook(url: String, body: String) {
+    let spawned = std::thread::Builder::new()
+        .name("sentinel-webhook".to_string())
+        .spawn(move || {
+            if let Err(e) = try_send(&url, &body) {
+                eprintln!("sentinel-dns: webhook failed: {e}");
+            }
+        });
+    if let Err(e) = spawned {
+        eprintln!("sentinel-dns: could not spawn webhook thread: {e}");
     }
 }
 
@@ -86,12 +105,12 @@ fn try_send(url: &str, body: &str) -> io::Result<()> {
 
     match response {
         Ok(_) => Ok(()),
-        Err(ureq::Error::Status(status, _)) => Err(io::Error::other(
-            format!("webhook returned HTTP {status}"),
-        )),
-        Err(ureq::Error::Transport(error)) => Err(io::Error::other(
-            format!("webhook transport failed: {error}"),
-        )),
+        Err(ureq::Error::Status(status, _)) => {
+            Err(io::Error::other(format!("webhook returned HTTP {status}")))
+        }
+        Err(ureq::Error::Transport(error)) => Err(io::Error::other(format!(
+            "webhook transport failed: {error}"
+        ))),
     }
 }
 
@@ -115,7 +134,9 @@ mod jsonl_tests {
             nxdomains: 0,
         };
         assert!(make_alert(f64::NAN).to_jsonl().contains(r#""score":0.00"#));
-        assert!(make_alert(f64::INFINITY).to_jsonl().contains(r#""score":0.00"#));
+        assert!(make_alert(f64::INFINITY)
+            .to_jsonl()
+            .contains(r#""score":0.00"#));
         assert!(make_alert(2.0).to_jsonl().contains(r#""score":1.00"#));
         assert!(make_alert(-1.0).to_jsonl().contains(r#""score":0.00"#));
     }
@@ -139,11 +160,24 @@ mod jsonl_tests {
 
 #[cfg(test)]
 mod webhook_tests {
-    use super::try_send;
+    use super::{send_webhook, try_send};
+    use std::time::Instant;
 
     #[test]
     fn rejects_plain_http_webhooks_before_network_access() {
         let error = try_send("http://127.0.0.1:9/hook", "{}").unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn background_delivery_returns_immediately() {
+        // Refused endpoint on a reserved port: the call must return at once
+        // and the failure is handled on the worker thread.
+        let start = Instant::now();
+        send_webhook("https://127.0.0.1:9/hook".to_string(), "{}".to_string());
+        assert!(
+            start.elapsed().as_millis() < 1000,
+            "send_webhook must not block the caller"
+        );
     }
 }
