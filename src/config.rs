@@ -102,26 +102,30 @@ impl Config {
         let mut cfg = Config::default();
 
         if let Some(v) = map.get("window_seconds") {
-            cfg.window_seconds = parse_number("window_seconds", v)?;
+            cfg.window_seconds = number_from("window_seconds", v)?;
         }
         if let Some(v) = map.get("score_threshold") {
-            cfg.score_threshold = parse_number("score_threshold", v)?;
+            cfg.score_threshold = number_from("score_threshold", v)?;
         }
         if let Some(v) = map.get("windows_before_alert") {
-            cfg.windows_before_alert = parse_number("windows_before_alert", v)?;
+            cfg.windows_before_alert = number_from("windows_before_alert", v)?;
         }
         if let Some(v) = map.get("trusted_clients") {
-            let clients = if v.is_empty() {
-                Vec::new()
-            } else {
-                v.split(',')
-                    .map(TrustedRule::parse)
-                    .collect::<Result<Vec<_>, _>>()?
-            };
-            cfg.trusted_rules = clients;
+            let entries = string_array_from("trusted_clients", v)?;
+            cfg.trusted_rules = entries
+                .iter()
+                .map(|entry| TrustedRule::parse(entry))
+                .collect::<Result<Vec<_>, _>>()?;
         }
         if let Some(v) = map.get("webhook_url") {
-            cfg.webhook_url = v.to_string();
+            match v {
+                JsonValue::Str(s) => cfg.webhook_url = s.clone(),
+                other => {
+                    return Err(format!(
+                        "webhook_url: expected a quoted string, got {other:?}"
+                    ))
+                }
+            }
         }
 
         if cfg.window_seconds == 0 {
@@ -151,17 +155,67 @@ impl Config {
     }
 }
 
-fn parse_number<T: std::str::FromStr>(key: &str, value: &str) -> Result<T, String> {
-    value
-        .trim()
-        .parse::<T>()
-        .map_err(|_| format!("{key}: {value:?} is not a valid number"))
+/// A parsed JSON value, just detailed enough to validate the known keys
+/// strictly while tolerating anything an unknown key carries.
+#[derive(Debug, Clone, PartialEq)]
+enum JsonValue {
+    /// A quoted string, escapes decoded.
+    Str(String),
+    /// A bare token: number, true, false, null — kept as written.
+    Bare(String),
+    /// An array of values (mixed kinds allowed; consumers decide).
+    Array(Vec<JsonValue>),
+    /// A nested object, parsed over and skipped: the config stays flat.
+    Object,
 }
 
-/// Parse a flat JSON object into key/value strings. String arrays become
-/// comma-joined values. Nested objects are not supported and fail the
-/// parse — the config stays flat on purpose.
-fn parse_object(text: &str) -> Result<HashMap<String, String>, String> {
+impl JsonValue {
+    /// The text of a quoted string or bare token, for numeric keys.
+    fn as_token(&self) -> Option<&str> {
+        match self {
+            JsonValue::Str(s) | JsonValue::Bare(s) => Some(s),
+            _ => None,
+        }
+    }
+}
+
+fn number_from<T: std::str::FromStr>(key: &str, value: &JsonValue) -> Result<T, String> {
+    let text = value
+        .as_token()
+        .ok_or_else(|| format!("{key}: expected a number, got {value:?}"))?;
+    text.trim()
+        .parse::<T>()
+        .map_err(|_| format!("{key}: {text:?} is not a valid number"))
+}
+
+fn string_array_from(key: &str, value: &JsonValue) -> Result<Vec<String>, String> {
+    let items = match value {
+        JsonValue::Array(items) => items,
+        other => {
+            return Err(format!(
+                "{key}: expected an array of strings, got {other:?}"
+            ))
+        }
+    };
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        match item {
+            JsonValue::Str(s) if !s.is_empty() && !s.contains(',') => out.push(s.clone()),
+            other => {
+                return Err(format!(
+                    "{key}: entries must be non-empty quoted strings, got {other:?}"
+                ))
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Parse a flat JSON object. Values are parsed generically: known keys get
+/// validated in `Config::from_json`, unknown keys are carried as-is so the
+/// format stays forward-compatible (a future config may use arrays or
+/// nested objects for keys this version has never heard of).
+fn parse_object(text: &str) -> Result<HashMap<String, JsonValue>, String> {
     let t = text.trim();
     let t = t
         .strip_prefix('{')
@@ -292,28 +346,24 @@ fn parse_hex4(bytes: &[u8], start: usize) -> Result<u16, String> {
     Ok(value)
 }
 
-fn parse_value(s: &str) -> Result<(String, &str), String> {
+fn parse_value(s: &str) -> Result<(JsonValue, &str), String> {
+    let s = s.trim_start();
     if s.starts_with('"') {
-        return parse_string(s);
+        let (value, rest) = parse_string(s)?;
+        return Ok((JsonValue::Str(value), rest));
     }
     if s.starts_with('[') {
         let mut rest = s.strip_prefix('[').expect("checked above").trim_start();
         let mut items = Vec::new();
         if let Some(after) = rest.strip_prefix(']') {
-            return Ok((String::new(), after));
+            return Ok((JsonValue::Array(items), after));
         }
         loop {
-            let (item, after) = parse_string(rest)?;
-            // This compact config schema stores trusted client entries as a
-            // comma-joined value, so commas inside an array member would be
-            // ambiguous and are rejected.
-            if item.is_empty() || item.contains(',') {
-                return Err("trusted_clients entries must be non-empty quoted strings".to_string());
-            }
+            let (item, after) = parse_value(rest)?;
             items.push(item);
             rest = after.trim_start();
             if let Some(after_array) = rest.strip_prefix(']') {
-                return Ok((items.join(","), after_array));
+                return Ok((JsonValue::Array(items), after_array));
             }
             rest = rest
                 .strip_prefix(',')
@@ -324,8 +374,50 @@ fn parse_value(s: &str) -> Result<(String, &str), String> {
             }
         }
     }
-    let end = s.find([',', '}']).unwrap_or(s.len());
-    Ok((s[..end].trim().to_string(), &s[end..]))
+    if s.starts_with('{') {
+        let rest = skip_object(s)?;
+        return Ok((JsonValue::Object, rest));
+    }
+    let end = s.find([',', '}', ']']).unwrap_or(s.len());
+    let token = s[..end].trim();
+    if token.is_empty() {
+        return Err(format!("expected a value, found {s:?}"));
+    }
+    Ok((JsonValue::Bare(token.to_string()), &s[end..]))
+}
+
+/// Consume a nested JSON object, tracking string context so braces inside
+/// strings do not count. Used only to skip values this config has no use
+/// for.
+fn skip_object(s: &str) -> Result<&str, String> {
+    let bytes = s.as_bytes();
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (i, &b) in bytes.iter().enumerate() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if b == b'\\' {
+                escaped = true;
+            } else if b == b'"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match b {
+            b'"' => in_string = true,
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Ok(&s[i + 1..]);
+                }
+            }
+            _ => {}
+        }
+    }
+    Err("object is not terminated".to_string())
 }
 
 #[cfg(test)]
@@ -491,5 +583,48 @@ mod validation_tests {
         for text in ["[]", "\"just a string\"", "42"] {
             assert!(Config::from_json(text).is_err(), "accepted {text}");
         }
+    }
+
+    #[test]
+    fn unknown_keys_tolerate_any_value_shape() {
+        // Forward compatibility: a future config may carry arrays, nested
+        // objects, or exotic scalars under keys this version ignores.
+        let cfg = Config::from_json(
+            r#"{
+                "future_array": [1, "two", {"nested": true}],
+                "future_object": {"deep": {"deeper": [3]}},
+                "future_null": null,
+                "window_seconds": 45
+            }"#,
+        )
+        .expect("unknown keys must not fail the parse");
+        assert_eq!(cfg.window_seconds, 45);
+    }
+
+    #[test]
+    fn known_keys_keep_their_strictness() {
+        let e = Config::from_json(r#"{ "trusted_clients": ["10.0.0.1", 42] }"#).unwrap_err();
+        assert!(e.contains("trusted_clients"), "message: {e}");
+        let e = Config::from_json(r#"{ "trusted_clients": {"a": 1} }"#).unwrap_err();
+        assert!(e.contains("trusted_clients"), "message: {e}");
+        let e = Config::from_json(r#"{ "webhook_url": 123 }"#).unwrap_err();
+        assert!(e.contains("webhook_url"), "message: {e}");
+        let e = Config::from_json(r#"{ "window_seconds": {} }"#).unwrap_err();
+        assert!(e.contains("window_seconds"), "message: {e}");
+    }
+
+    #[test]
+    fn numeric_keys_accept_bare_and_quoted_values() {
+        let cfg = Config::from_json(r#"{ "window_seconds": "45" }"#).expect("quoted number ok");
+        assert_eq!(cfg.window_seconds, 45);
+        let cfg = Config::from_json(r#"{ "score_threshold": 0.8 }"#).expect("bare number ok");
+        assert_eq!(cfg.score_threshold, 0.8);
+    }
+
+    #[test]
+    fn missing_values_are_errors() {
+        assert!(Config::from_json(r#"{ "window_seconds": }"#).is_err());
+        assert!(Config::from_json(r#"{ "future": [1, ] }"#).is_err());
+        assert!(Config::from_json(r#"{ "future": {"x": 1 }"#).is_err());
     }
 }
