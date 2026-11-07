@@ -47,7 +47,7 @@ USAGE:
     sentinel-dns <command> [options]
 
 COMMANDS:
-    analyze <file.pcap>     score an offline pcap capture
+    analyze <file.pcap>...  score one or more offline pcap captures as one timeline
     watch                   read a pcap stream from stdin (tcpdump pipe)
     selftest                synthesize a capture and verify the pipeline
     config                  print the default configuration
@@ -61,7 +61,7 @@ OPTIONS:
 
 #[derive(Debug)]
 enum Command {
-    Analyze(PathBuf),
+    Analyze(Vec<PathBuf>),
     Watch,
     Selftest,
     PrintConfig,
@@ -127,17 +127,10 @@ fn parse_args(args: &[String]) -> Result<Invocation, String> {
                 command = Some(Command::Help);
             }
             "analyze" => {
-                i += 1;
-                let file = args
-                    .get(i)
-                    .ok_or_else(|| "analyze needs a pcap file".to_string())?;
-                if file.starts_with('-') {
-                    return Err(format!("analyze: {file:?} does not look like a pcap file"));
-                }
                 if command.is_some() {
                     return Err("only one command can be given".to_string());
                 }
-                command = Some(Command::Analyze(PathBuf::from(file)));
+                command = Some(Command::Analyze(Vec::new()));
             }
             "watch" | "selftest" | "config" => {
                 if command.is_some() {
@@ -149,9 +142,26 @@ fn parse_args(args: &[String]) -> Result<Invocation, String> {
                     _ => Command::PrintConfig,
                 });
             }
-            other => return Err(format!("unknown command or flag {other:?}")),
+            other => {
+                // After `analyze`, every non-flag token is another capture
+                // file; elsewhere unknown tokens are errors.
+                if let Some(Command::Analyze(files)) = &mut command {
+                    if other.starts_with('-') {
+                        return Err(format!("analyze: {other:?} does not look like a pcap file"));
+                    }
+                    files.push(PathBuf::from(other));
+                } else {
+                    return Err(format!("unknown command or flag {other:?}"));
+                }
+            }
         }
         i += 1;
+    }
+
+    if let Some(Command::Analyze(files)) = &command {
+        if files.is_empty() {
+            return Err("analyze needs a pcap file".to_string());
+        }
     }
 
     Ok(Invocation {
@@ -207,25 +217,78 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Command::Selftest => selftest(),
-        Command::Analyze(file) => match std::fs::File::open(&file) {
-            Ok(f) => {
-                let stdout = io::stdout();
-                let mut out = BufWriter::new(stdout.lock());
-                let stats = run_pipeline(
-                    BufReader::new(f),
-                    &config,
-                    invocation.config_path.as_deref(),
-                    invocation.verbose,
-                    false,
-                    &mut out,
-                );
-                finish(stats, &mut out, true)
+        Command::Analyze(files) => {
+            // Fail fast: open every capture before analyzing any, so a
+            // missing file cannot produce a half-run report.
+            let mut inputs = Vec::with_capacity(files.len());
+            for file in &files {
+                match std::fs::File::open(file) {
+                    Ok(f) => inputs.push((file, BufReader::new(f))),
+                    Err(e) => {
+                        eprintln!("sentinel-dns: {}: {e}", file.display());
+                        return ExitCode::FAILURE;
+                    }
+                }
             }
-            Err(e) => {
-                eprintln!("sentinel-dns: {}: {e}", file.display());
-                ExitCode::FAILURE
+            let stdout = io::stdout();
+            let mut out = BufWriter::new(stdout.lock());
+            let mut pipeline = Pipeline::new(
+                &config,
+                invocation.config_path.as_deref(),
+                invocation.verbose,
+                false,
+                &mut out,
+            );
+            let mut all_parsed = true;
+            let mut aborted = None;
+            for (file, reader) in inputs {
+                if SHUTDOWN.load(Ordering::SeqCst) {
+                    break;
+                }
+                match pipeline.run_stream(reader) {
+                    Ok(Some(n)) => {
+                        eprintln!("sentinel-dns: {}: {n} packets", file.display());
+                    }
+                    Ok(None) => all_parsed = false,
+                    Err(e) => {
+                        aborted = Some(e);
+                        break;
+                    }
+                }
             }
-        },
+            let result = match aborted {
+                Some(e) => Err(e),
+                None => pipeline.finish(),
+            };
+            // Copy the totals out before the pipeline's borrow of `out` ends.
+            let stats = (
+                pipeline.stats.packets,
+                pipeline.stats.dns_messages,
+                pipeline.stats.alerts,
+            );
+            drop(pipeline);
+            out.flush().ok();
+            match result {
+                Ok(()) => {
+                    let (packets, dns_messages, alerts) = stats;
+                    if packets > 0 {
+                        eprintln!(
+                            "sentinel-dns: total {packets} packets, {dns_messages} dns messages, {alerts} alerts"
+                        );
+                    }
+                    if all_parsed {
+                        ExitCode::SUCCESS
+                    } else {
+                        ExitCode::FAILURE
+                    }
+                }
+                Err(e) if e.kind() == io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("sentinel-dns: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
         Command::Watch => {
             let stdin = io::stdin();
             let stdout = io::stdout();
@@ -415,15 +478,172 @@ struct PipelineStats {
     alerts: u64,
 }
 
-/// Shared pipeline over any pcap byte source. In `live` mode (stdin pipe)
-/// a quiet pipe closes finished windows on wall-clock time; offline, all
-/// windows drain when the file ends. Windows strictly older than the
-/// current packet's window are closed as packets arrive, which keeps the
-/// tracker bounded even if timestamps jump backwards.
-///
-/// Returns `Err` when writing alerts fails (e.g. the reader of our stdout
-/// went away — a broken pipe must not scroll the journal). Returns
-/// `Ok(None)` when the stream is not a pcap file at all.
+/// The scoring pipeline: shared tracker, alert state, and output sink over
+/// one or more pcap streams. Each `run_stream` call feeds one pcap file or
+/// pipe; window keys and alert streaks continue across streams, so
+/// sequential captures analyze as one timeline. In `live` mode a quiet pipe
+/// closes finished windows on wall-clock time. Windows strictly older than
+/// the current packet's window are closed as packets arrive, which keeps
+/// the tracker bounded even if timestamps jump backwards.
+struct Pipeline<'a, W: Write> {
+    config: Config,
+    cfg_path: Option<&'a Path>,
+    verbose: bool,
+    live: bool,
+    tracker: Tracker,
+    alerts: AlertState,
+    out: &'a mut W,
+    stats: PipelineStats,
+}
+
+impl<'a, W: Write> Pipeline<'a, W> {
+    fn new(
+        config: &Config,
+        cfg_path: Option<&'a Path>,
+        verbose: bool,
+        live: bool,
+        out: &'a mut W,
+    ) -> Self {
+        Pipeline {
+            tracker: Tracker::new(config.window_seconds),
+            config: config.clone(),
+            cfg_path,
+            verbose,
+            live,
+            alerts: AlertState::default(),
+            out,
+            stats: PipelineStats::default(),
+        }
+    }
+
+    /// Feed one pcap byte stream. Returns `Err` when writing alerts fails
+    /// (e.g. the reader of our stdout went away — a broken pipe must not
+    /// scroll the journal). Returns `Ok(None)` when the stream is not a
+    /// pcap file at all; `Ok(Some(n))` reports the packets consumed.
+    fn run_stream<R: Read>(&mut self, reader: R) -> io::Result<Option<u64>> {
+        let mut reader = match pcap::PcapReader::new(reader) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("sentinel-dns: not a pcap stream: {e}");
+                return Ok(None);
+            }
+        };
+        let mut stream_packets = 0u64;
+
+        loop {
+            // Shutdown and SIGHUP are handled at loop safe points.
+            if SHUTDOWN.swap(false, Ordering::SeqCst) {
+                eprintln!("sentinel-dns: shutdown signal: draining captured windows");
+                return Ok(Some(stream_packets));
+            }
+            if RELOAD.swap(false, Ordering::SeqCst) {
+                self.reload();
+            }
+
+            let packet = match reader.next_packet() {
+                Ok(Some(p)) => p,
+                Ok(None) => return Ok(Some(stream_packets)),
+                Err(e) if self.live && e.kind() == io::ErrorKind::WouldBlock => {
+                    // Pipe is quiet: close windows wall-clock time has finished.
+                    let now = unix_now();
+                    close_windows(
+                        &mut self.tracker,
+                        now / self.config.window_seconds.max(1),
+                        &self.config,
+                        &mut self.alerts,
+                        self.out,
+                        &mut self.stats.alerts,
+                        self.verbose,
+                    )?;
+                    self.out.flush().ok();
+                    continue;
+                }
+                Err(e) => {
+                    if self.verbose {
+                        eprintln!("sentinel-dns: stream ended early: {e}");
+                    }
+                    return Ok(Some(stream_packets));
+                }
+            };
+            stream_packets += 1;
+            self.stats.packets += 1;
+            let ts = u64::from(packet.ts_sec);
+            let window = ts / self.config.window_seconds.max(1);
+            close_windows(
+                &mut self.tracker,
+                window,
+                &self.config,
+                &mut self.alerts,
+                self.out,
+                &mut self.stats.alerts,
+                self.verbose,
+            )?;
+
+            match dns::extract_query(&packet.data) {
+                Ok(Some(q)) => {
+                    self.stats.dns_messages += 1;
+                    if self.verbose {
+                        eprintln!(
+                            "pkt {}.{:06} {} qtype={} {}",
+                            packet.ts_sec,
+                            packet.ts_usec,
+                            q.name,
+                            q.qtype,
+                            if q.is_nxdomain() { "NXDOMAIN" } else { "" }
+                        );
+                    }
+                    if !self.config.is_trusted(q.client) {
+                        self.tracker.observe_at(&q, ts);
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    if self.verbose {
+                        eprintln!("sentinel-dns: skipped packet: {e}");
+                    }
+                }
+            }
+            if self.live {
+                self.out.flush().ok();
+            }
+        }
+    }
+
+    /// Re-read the config file. A changed window length invalidates every
+    /// window key and watermark, so scoring starts fresh rather than
+    /// mixing scales.
+    fn reload(&mut self) {
+        match self.cfg_path {
+            Some(p) => match Config::load(p) {
+                Ok(c) => {
+                    if c.window_seconds != self.config.window_seconds {
+                        self.tracker = Tracker::new(c.window_seconds);
+                        self.alerts = AlertState::default();
+                    }
+                    self.config = c;
+                    eprintln!("sentinel-dns: config reloaded from {}", p.display());
+                }
+                Err(e) => eprintln!("sentinel-dns: reload failed, keeping previous config: {e}"),
+            },
+            None => eprintln!("sentinel-dns: SIGHUP ignored (no -c config path)"),
+        }
+    }
+
+    /// Score everything not yet closed (end of analysis or shutdown).
+    fn finish(&mut self) -> io::Result<()> {
+        close_windows(
+            &mut self.tracker,
+            u64::MAX,
+            &self.config,
+            &mut self.alerts,
+            self.out,
+            &mut self.stats.alerts,
+            self.verbose,
+        )
+    }
+}
+
+/// Single-stream convenience wrapper used by `selftest` and tests.
 fn run_pipeline<R: Read, W: Write>(
     reader: R,
     config: &Config,
@@ -432,123 +652,13 @@ fn run_pipeline<R: Read, W: Write>(
     live: bool,
     out: &mut W,
 ) -> io::Result<Option<PipelineStats>> {
-    let mut reader = match pcap::PcapReader::new(reader) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("sentinel-dns: not a pcap stream: {e}");
-            return Ok(None);
-        }
-    };
-    let mut tracker = Tracker::new(config.window_seconds);
-    let mut alerts = AlertState::default();
-    let mut config = config.clone();
-    let mut stats = PipelineStats::default();
-
-    loop {
-        // Shutdown and SIGHUP are handled at loop safe points.
-        if SHUTDOWN.swap(false, Ordering::SeqCst) {
-            eprintln!("sentinel-dns: shutdown signal: draining captured windows");
-            break;
-        }
-        if RELOAD.swap(false, Ordering::SeqCst) {
-            match cfg_path {
-                Some(p) => match Config::load(p) {
-                    Ok(c) => {
-                        // A changed window length invalidates every window
-                        // key and watermark; start scoring fresh rather
-                        // than mixing scales.
-                        if c.window_seconds != config.window_seconds {
-                            tracker = Tracker::new(c.window_seconds);
-                            alerts = AlertState::default();
-                        }
-                        config = c;
-                        eprintln!("sentinel-dns: config reloaded from {}", p.display());
-                    }
-                    Err(e) => {
-                        eprintln!("sentinel-dns: reload failed, keeping previous config: {e}")
-                    }
-                },
-                None => eprintln!("sentinel-dns: SIGHUP ignored (no -c config path)"),
-            }
-        }
-
-        let packet = match reader.next_packet() {
-            Ok(Some(p)) => p,
-            Ok(None) => break,
-            Err(e) if live && e.kind() == io::ErrorKind::WouldBlock => {
-                // Pipe is quiet: close windows that wall-clock time has finished.
-                let now = unix_now();
-                close_windows(
-                    &mut tracker,
-                    now / config.window_seconds.max(1),
-                    &config,
-                    &mut alerts,
-                    out,
-                    &mut stats.alerts,
-                    verbose,
-                )?;
-                out.flush().ok();
-                continue;
-            }
-            Err(e) => {
-                if verbose {
-                    eprintln!("sentinel-dns: stream ended early: {e}");
-                }
-                break;
-            }
-        };
-        stats.packets += 1;
-        let ts = u64::from(packet.ts_sec);
-        let window = ts / config.window_seconds.max(1);
-        close_windows(
-            &mut tracker,
-            window,
-            &config,
-            &mut alerts,
-            out,
-            &mut stats.alerts,
-            verbose,
-        )?;
-
-        match dns::extract_query(&packet.data) {
-            Ok(Some(q)) => {
-                stats.dns_messages += 1;
-                if verbose {
-                    eprintln!(
-                        "pkt {}.{:06} {} qtype={} {}",
-                        packet.ts_sec,
-                        packet.ts_usec,
-                        q.name,
-                        q.qtype,
-                        if q.is_nxdomain() { "NXDOMAIN" } else { "" }
-                    );
-                }
-                if !config.is_trusted(q.client) {
-                    tracker.observe_at(&q, ts);
-                }
-            }
-            Ok(None) => {}
-            Err(e) => {
-                if verbose {
-                    eprintln!("sentinel-dns: skipped packet: {e}");
-                }
-            }
-        }
-        if live {
-            out.flush().ok();
-        }
+    let mut pipeline = Pipeline::new(config, cfg_path, verbose, live, out);
+    if pipeline.run_stream(reader)?.is_some() {
+        pipeline.finish()?;
+        Ok(Some(pipeline.stats))
+    } else {
+        Ok(None)
     }
-
-    close_windows(
-        &mut tracker,
-        u64::MAX,
-        &config,
-        &mut alerts,
-        out,
-        &mut stats.alerts,
-        verbose,
-    )?;
-    Ok(Some(stats))
 }
 
 /// Score and emit alerts for every window strictly older than `before`.
