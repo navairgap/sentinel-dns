@@ -59,6 +59,9 @@ sentinel-dns analyze capture.pcap
 # watch live resolver traffic (the intended deployment)
 sudo tcpdump -i eth0 -w - 'udp port 53' | sentinel-dns watch
 
+# analyze a week of rotated captures as one timeline
+sentinel-dns analyze mon.pcap tue.pcap wed.pcap
+
 # verify your build sees what it should
 sentinel-dns selftest
 
@@ -71,12 +74,24 @@ SIEM, or anything that reads JSONL:
 
 ```json
 {"v":1,"client":"10.0.0.42","window":1700000040,"score":0.90,
- "reasons":["sustained_dga","nxdomain_burst"],"queries":45,"nxdomains":41}
+ "reasons":["sustained_dga","nxdomain_burst"],"queries":45,"nxdomains":41,
+ "suspicious":30}
 ```
+
+| field | meaning |
+| --- | --- |
+| `client` | IP of the client that earned the alert |
+| `window` | start of the window that crossed the threshold (unix seconds) |
+| `score` | window score, 0.00–1.00 |
+| `reasons` | which window-level signals fired |
+| `queries` | DNS questions the client asked in that window |
+| `nxdomains` | NXDOMAIN responses it received |
+| `suspicious` | questions whose names scored as high-suspicion |
 
 Progress for offline runs (`packets, dns messages, alerts`) and any
 skipped-packet diagnostics (with `-v`) go to stderr; stdout stays pure
-JSONL.
+JSONL. See [docs/sentinel-dns.1](docs/sentinel-dns.1) for the full command
+reference.
 
 ## Configuration
 
@@ -169,6 +184,32 @@ at window granularity. The alert stream goes to journald by default; point
 `StandardOutput=` at a file if you want logrotate to handle retention.
 `systemctl reload sentinel-dns` re-reads the config.
 
+## Signals and exit status
+
+- `SIGHUP` — reload the config at the next safe point; the capture keeps
+  flowing. A changed `window_seconds` resets in-flight windows and
+  streaks.
+- `SIGINT`/`SIGTERM` — stop reading and score everything already captured
+  before exiting cleanly.
+- Exit `0` on success (including a drained shutdown and a closed stdout
+  pipe), `1` on failure (unreadable input, bad config, not a pcap, I/O
+  error), `2` on usage errors.
+
+## Troubleshooting
+
+- **No alerts, but you are sure traffic is suspicious** — run with `-v`
+  and watch the closed-window lines: scores are printed per client per
+  window, so you can see how far off the threshold you are. Then lower
+  `score_threshold` or `windows_before_alert` accordingly.
+- **`sentinel-dns: not a pcap stream`** — the file is pcapng or
+  nanosecond-resolution. Convert with `tcpdump -r in.pcapng -w out.pcap`
+  or `editcap -F pcap`.
+- **Alerts stop arriving when stdout is rotated away** — the pipeline
+  exits when the alert stream closes. If you rotate, point
+  `StandardOutput=` at journald, or use a copytruncate-style rotator.
+- **Too many alerts from one subnet** — add the subnet to
+  `trusted_clients` rather than raising thresholds for everyone.
+
 ## Limitations (honest)
 
 - Ethernet IPv4 UDP/53 only. IPv6, pcapng, VLAN tags, and DNS over
@@ -188,7 +229,7 @@ at window granularity. The alert stream goes to journald by default; point
 ## Development
 
 ```bash
-cargo test          # 73 unit + integration tests, no fixtures, no network
+cargo test          # 100+ unit tests, no fixtures, no network
 cargo run -- selftest   # end-to-end pipeline check (CI runs this)
 cargo clippy -- -D warnings
 cargo fmt --all -- --check
